@@ -1,0 +1,10 @@
+{
+  "file": "INV-06.pdf",
+  "payables": [],
+  "declined": [
+    {
+      "doc_type": "unknown",
+      "reason": "Insufficient or too-weak signal to confidently classify."
+    }
+  ]
+}

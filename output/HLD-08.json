@@ -1,0 +1,10 @@
+{
+  "file": "HLD-08.pdf",
+  "payables": [],
+  "declined": [
+    {
+      "doc_type": "invoice",
+      "reason": "Classified as payable but could not build financial facts (missing or unnormalizable stated gross total)."
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+# Project-local virtual environment (see requirements.txt for setup
+# instructions) — never commit; ~340MB and machine-specific.
+.venv/
+venv/
+
+# Rendered page-image cache (regenerated automatically on each run from
+# documents/ — not source, not a deliverable).
+.cache/
+
+# Python bytecode / pytest cache.
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS/editor cruft.
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local scratch artifacts from development/testing (not deliverables).
+output_determinism_1/
+output_determinism_2/
+/tmp/
+
+# Never commit secrets/credentials, if any are ever introduced.
+.env
+*.key
+*_secret*
+
+# output/ is intentionally NOT ignored — output/*.json is a required
+# deliverable per the assignment brief.

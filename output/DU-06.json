@@ -1,0 +1,10 @@
+{
+  "file": "DU-06.pdf",
+  "payables": [],
+  "declined": [
+    {
+      "doc_type": "invoice",
+      "reason": "INSUFFICIENT_EVIDENCE: evidence.minimum_corroboration: only a bare total-like number was found — no invoice number, supplier name, currency, or date to corroborate that this is genuinely a payable document"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+# Phase 1: no third-party dependencies yet — run.py works with the stdlib
+# alone (matching erp.py's own "stdlib only" constraint).
+
+pytest>=8.0
+
+# Phase 2: page-to-image rendering + embedded text layer extraction
+# (pipeline/ocr_render.py).
+pymupdf>=1.24
+
+# Phase 5 OCR upgrade: fully local, free, zero-API-key OCR engine (ONNX
+# Runtime + open OCR models, no system binary like Tesseract required — no
+# admin/elevation needed either, which matters on machines without it).
+# Optional: if this package is not installed, pipeline/ocr_render.py
+# automatically falls back to NULL_OCR_PROVIDER (honest "" text, never
+# fabricated) rather than failing. Install it to get real OCR on scanned
+# documents:
+#   python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
+#   (recommended: a dedicated venv, since this pulls in onnxruntime/opencv/
+#   numpy at specific versions that may not match versions already installed
+#   globally for unrelated projects)
+rapidocr-onnxruntime>=1.4

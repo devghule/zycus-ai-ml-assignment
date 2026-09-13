@@ -1,0 +1,10 @@
+{
+  "file": "DU-05s.pdf",
+  "payables": [],
+  "declined": [
+    {
+      "doc_type": "unknown",
+      "reason": "Conflicting payable and non-payable signals; declining to guess."
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "file": "INV-09.pdf",
+  "payables": [
+    {
+      "invoice_type": "INVOICE",
+      "currency": "EUR",
+      "line_items": [
+        {
+          "description": "",
+          "item_type": "SERVICE",
+          "uom": "",
+          "quantity": "1",
+          "unit_price": "37767.32",
+          "total": "37767.32",
+          "discount": "",
+          "discount_percentage": "",
+          "tax_rate": "",
+          "tax_amount": "",
+          "taxes": []
+        }
+      ],
+      "taxes": [],
+      "discount_amount": "",
+      "freight_charges": "",
+      "insurance_charges": "",
+      "extra_charges": "",
+      "excise_duties": "",
+      "gross_total": "37767.32",
+      "invoice_number": "Invoice",
+      "invoice_date": "",
+      "due_date": "",
+      "supplier": {
+        "name": "",
+        "supplier_id": "",
+        "address": "",
+        "vat_id": ""
+      },
+      "buyer": {
+        "company_code": "",
+        "business_unit_code": "",
+        "location_code": ""
+      },
+      "payment_term_id": "",
+      "po_number": "",
+      "po_id": "",
+      "subtotal": "",
+      "total_tax_amount": ""
+    }
+  ],
+  "declined": []
+}

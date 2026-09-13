@@ -1,0 +1,51 @@
+{
+  "file": "DU-03.pdf",
+  "payables": [
+    {
+      "invoice_type": "INVOICE",
+      "currency": "USD",
+      "line_items": [
+        {
+          "description": "",
+          "item_type": "SERVICE",
+          "uom": "",
+          "quantity": "1",
+          "unit_price": "1040.06",
+          "total": "1040.06",
+          "discount": "",
+          "discount_percentage": "",
+          "tax_rate": "",
+          "tax_amount": "",
+          "taxes": []
+        }
+      ],
+      "taxes": [],
+      "discount_amount": "",
+      "freight_charges": "",
+      "insurance_charges": "",
+      "extra_charges": "",
+      "excise_duties": "",
+      "gross_total": "1040.06",
+      "invoice_number": "",
+      "invoice_date": "",
+      "due_date": "",
+      "supplier": {
+        "name": "",
+        "supplier_id": "",
+        "address": "",
+        "vat_id": ""
+      },
+      "buyer": {
+        "company_code": "",
+        "business_unit_code": "",
+        "location_code": ""
+      },
+      "payment_term_id": "",
+      "po_number": "IVexDISTRIBUTIONGMBH",
+      "po_id": "",
+      "subtotal": "",
+      "total_tax_amount": ""
+    }
+  ],
+  "declined": []
+}

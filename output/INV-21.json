@@ -4,7 +4,7 @@
   "declined": [
     {
       "doc_type": "invoice",
-      "reason": "INSUFFICIENT_EVIDENCE: evidence.minimum_corroboration: only a bare total-like number was found — no invoice number, supplier name, currency, or date to corroborate that this is genuinely a payable document"
+      "reason": "INSUFFICIENT_EVIDENCE: evidence.minimum_corroboration: only a bare total-like number (and, at most, a currency code) was found — no invoice number, supplier name, date, or distinct subtotal to corroborate that this is genuinely a payable document"
     }
   ]
 }

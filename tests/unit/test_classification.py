@@ -64,6 +64,25 @@ def test_customs_document_classifies_as_non_payable():
     assert result.doc_class == DocumentClass.NON_PAYABLE
 
 
+def test_customs_consolidated_invoice_title_is_recognized():
+    # DU-02 (corpus audit): titled "Customs Consolidated Invoice" — no
+    # "customs declaration" wording, so the pre-existing pattern alone
+    # missed it and let this non-payable customs bundle carry zero
+    # negative signal.
+    text = "Customs Consolidated Invoice\nSELLER\nInvoiceNumber\n554701215"
+    result = classify_segment_from_text(text)
+    assert "customs vocabulary" in result.evidence
+
+
+def test_ordinary_invoice_mentioning_customs_vat_line_is_unaffected():
+    # An invoice that merely has a "Customs VAT" LINE ITEM (INV-09-style)
+    # must not be caught by the customs-invoice phrase — it requires
+    # "customs" directly followed by "invoice", which this text never has.
+    text = "Invoice No: 12345\nImport duties 31889.09\nCustoms VAT 5878.23\nTotal 37767.32"
+    result = classify_segment_from_text(text)
+    assert "customs vocabulary" not in result.evidence
+
+
 def test_dunning_letter_classifies_as_non_payable():
     text = "PAYMENT REMINDER\nOverdue Notice\nDear customer, your invoice is overdue. Please pay immediately."
     result = classify_segment_from_text(text)

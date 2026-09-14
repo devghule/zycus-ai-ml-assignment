@@ -80,9 +80,21 @@ _LINE_ITEM_TABLE_RE = re.compile(
 )
 
 # Credit-memo specific signals ------------------------------------------------
+# Trailing boundary is a negative lowercase-lookahead rather than a plain
+# \b: OCR commonly glues a title-case label directly against the next
+# title-case word/number with no space (confirmed — DU-10's own text reads
+# "CreditNoteNo.:5900366703"), and a plain \b fails there since both "e"
+# and "N" are word characters with no transition between them. Only a
+# following LOWERCASE letter is rejected (e.g. a hypothetical unrelated
+# "creditnotebook"), matching the same fix already applied to PO/VAT label
+# glue elsewhere in this corpus.
 _CREDIT_MEMO_RE = re.compile(
+    # (?-i:...) locally disables the module-level IGNORECASE flag just for
+    # this lookahead: without it, [a-z] under re.IGNORECASE also matches
+    # uppercase letters, defeating the whole point (it would then reject
+    # "CreditNoteNo." too, since "N" is a letter).
     r"\b(credit\s*note|credit\s*memo|gutschrift|kreeditarve|nota\s*de\s*cr[ée]dito|"
-    r"nota\s*credito)\b",
+    r"nota\s*credito)(?-i:(?![a-z]))",
     re.IGNORECASE,
 )
 _REVERSAL_RE = re.compile(
@@ -99,8 +111,18 @@ _DELIVERY_WAYBILL_RE = re.compile(
     re.IGNORECASE,
 )
 _CUSTOMS_RE = re.compile(
+    # "customs...invoice" (e.g. "Customs Consolidated Invoice") added
+    # alongside "customs declaration" (corpus audit — Combined Improvement
+    # Pass: DU-02 is titled exactly this, a customs/logistics bundle, not a
+    # genuine supplier AP invoice, but previously carried no non-payable
+    # signal at all). Deliberately requires "customs" directly followed by
+    # "invoice" (with only "consolidated"/"detailed" allowed between) so it
+    # does not fire on an ordinary invoice that merely mentions customs
+    # duties/VAT as a line item (e.g. INV-09's "Customs VAT" line, which
+    # has no adjacent "invoice" word).
     r"\b(customs\s*declaration|export\s*declaration|zolldeklaration|toll(deklarat)?|"
-    r"declara[cç][aã]o\s*de\s*exporta[cç][aã]o)\b",
+    r"declara[cç][aã]o\s*de\s*exporta[cç][aã]o|"
+    r"customs\s*(?:consolidated|detailed)?\s*invoice)\b",
     re.IGNORECASE,
 )
 _DUNNING_RE = re.compile(

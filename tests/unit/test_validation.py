@@ -81,6 +81,27 @@ def test_required_evidence_present_is_valid():
     assert issues == []
 
 
+# Currency alone is deliberately NOT sufficient corroboration (Combined
+# Improvement Pass, recall investigation): corpus audit found a resolved
+# currency code plus a bare total is too weak to distinguish a genuine
+# payable from an incidental currency mention on a non-payable document
+# (e.g. a customs bundle referencing a bank account in a given currency).
+def test_currency_alone_is_insufficient_evidence():
+    issues = check_required_payable_evidence({"gross_total_raw": "100.00", "currency": "EUR"})
+    assert issues and issues[0].decline_reason == DeclineReason.INSUFFICIENT_EVIDENCE
+
+
+# A distinct subtotal alongside the total is real structural evidence (two
+# numbers implying computed structure) even with no identity field captured
+# — this is what makes INV-04/INV-07 (net-of-credit ZAR invoices with no
+# extractable invoice number) genuinely corroborated.
+def test_distinct_subtotal_is_sufficient_evidence():
+    issues = check_required_payable_evidence({
+        "gross_total_raw": "119.00", "subtotal_raw": "100.00", "currency": "EUR",
+    })
+    assert issues == []
+
+
 # 4. fabricated/non-evidenced critical value -> decline
 def test_fabricated_gross_total_not_in_text_declines():
     payload = _base_payload(gross_total="999.99")

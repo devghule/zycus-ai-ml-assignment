@@ -1,10 +1,51 @@
 {
   "file": "INV-04.pdf",
-  "payables": [],
-  "declined": [
+  "payables": [
     {
-      "doc_type": "invoice",
-      "reason": "Classified as payable but could not build financial facts (missing or unnormalizable stated gross total)."
+      "invoice_type": "INVOICE",
+      "currency": "ZAR",
+      "line_items": [
+        {
+          "description": "",
+          "item_type": "SERVICE",
+          "uom": "",
+          "quantity": "1",
+          "unit_price": "19730.55",
+          "total": "19730.55",
+          "discount": "",
+          "discount_percentage": "",
+          "tax_rate": "",
+          "tax_amount": "",
+          "taxes": []
+        }
+      ],
+      "taxes": [],
+      "discount_amount": "",
+      "freight_charges": "",
+      "insurance_charges": "",
+      "extra_charges": "",
+      "excise_duties": "",
+      "gross_total": "19730.55",
+      "invoice_number": "",
+      "invoice_date": "",
+      "due_date": "",
+      "supplier": {
+        "name": "",
+        "supplier_id": "",
+        "address": "",
+        "vat_id": ""
+      },
+      "buyer": {
+        "company_code": "",
+        "business_unit_code": "",
+        "location_code": ""
+      },
+      "payment_term_id": "",
+      "po_number": "",
+      "po_id": "",
+      "subtotal": "17157.00",
+      "total_tax_amount": ""
     }
-  ]
+  ],
+  "declined": []
 }

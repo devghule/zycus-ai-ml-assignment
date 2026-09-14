@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from pipeline.duplicate_detection import (
+    HIGH_CONFIDENCE_NEAR_DUPLICATE_SIMILARITY_THRESHOLD,
     DuplicateRegistry,
     DuplicateVerdict,
     build_evidence,
@@ -284,3 +285,158 @@ def test_multiple_segments_from_same_bundled_file_are_not_flagged_as_duplicates(
     )
     result2 = registry.check("bundle.pdf", ev2)
     assert result2.verdict != DuplicateVerdict.DUPLICATE_OF_BOOKED_PAYABLE
+
+
+# --- High-confidence near-duplicate promotion (Combined Improvement Pass,
+# duplicate-resolution investigation: INV-04/INV-07) --------------------------
+#
+# These two documents are two independently-scanned copies of the same
+# underlying invoice: OCR noise means content_hash differs, and neither
+# extraction produced an invoice_number/date/supplier, so no business_key
+# can be built either. The only remaining honest signals are near-total
+# text similarity plus exact-matching currency and gross_total — this is
+# what the new tier promotes to an auto-decline, and ONLY when all three
+# hold together.
+
+# Modeled directly on the real INV-04/INV-07 OCR text (same proportions:
+# a small address-line difference against a much larger shared body), so
+# the similarity score this produces is representative of the real pair
+# (~0.987) rather than an artificially short fixture that exaggerates the
+# one differing line's weight.
+_INV04_TEXT = (
+    "InvoiceDate\nTAXINVOICE\nLarkspurDistributionMeridianPrint\n30Apr2025\n"
+    "LarkspurDistributionMeridianPrint\nGartenweg173\n"
+    "NorthwindServicesZA(Pty)MeridianPrintLtd\nINV7097292303\nF04,KiepersolHouse\n"
+    "RuadoOuro5\nBahnhofstrasse300\nUnit7,BlockB\nINV7097292303\nDarrenwood\n"
+    "Gartenweg60\nGauteng\nMaitland\n2195\n8690782647\n"
+    "WESTERNCAPECAPETOWN7405\nSouthAfrica\nSOUTHAFRICA\n"
+    "VATNumber:9446639440\nDescription\nQuantity\nUnitPrice\nVAT\nAmountZAR\n"
+    "StandardCriminalVerification\n133.00\n129.00\n15%\n17,157.00\n"
+    "Subtotal\n17,157.00\nTOTALVAT\n2,573.55\nTOTALZAR\n19,730.55\n"
+    "LessAmountCredited\n13,110.00\nAMOUNTDUEZAR\n6,620.55\nDueDate:31May2025\n"
+    "OakhavenDistributionMeridianPrintLtd\nRedwaterBank\nBranch:Sand\n"
+    "BranchNumber-\nAccount\n897530172\nSWIFT:SYEWTNPV\n"
+    "Pleaseuseyourinvoicenumberasreferencewhenmakingpayment.\n"
+    "CompanyRegistrationNo:3268/558090/90.RegisteredOffice:Gartenweg173"
+)
+_INV07_TEXT = _INV04_TEXT.replace("RuadoOuro5", "M5OfficePark")
+
+
+def test_high_confidence_near_duplicate_pair_is_auto_declined(make_pdf):
+    a = make_pdf("INV-04.pdf", b"scan one of the invoice")
+    b = make_pdf("INV-07.pdf", b"scan two of the same invoice, different bytes")
+    registry = DuplicateRegistry()
+
+    ev_a = build_evidence(a, full_text=_INV04_TEXT, currency="ZAR", gross_total="19730.55")
+    assert ev_a.business_key == ""  # no invoice_number/date/supplier — confirms the real scenario
+    registry.register("INV-04.pdf", ev_a)
+
+    ev_b = build_evidence(b, full_text=_INV07_TEXT, currency="ZAR", gross_total="19730.55")
+    result = registry.check("INV-07.pdf", ev_b)
+    assert result.verdict == DuplicateVerdict.DUPLICATE_OF_BOOKED_PAYABLE
+    assert result.method == "high_confidence_near_duplicate"
+
+
+def test_high_confidence_survivor_is_the_first_booked_deterministically(make_pdf):
+    # Discovery order is filename-sorted (pipeline/discovery.py), so
+    # "INV-04.pdf" is always processed/booked before "INV-07.pdf" — the
+    # survivor is whichever was registered first, with no extra scoring
+    # logic needed. Confirm the matched_against/surviving identifier.
+    a = make_pdf("INV-04.pdf", b"scan one")
+    b = make_pdf("INV-07.pdf", b"scan two")
+    registry = DuplicateRegistry()
+    ev_a = build_evidence(a, full_text=_INV04_TEXT, currency="ZAR", gross_total="19730.55")
+    registry.register("INV-04.pdf", ev_a)
+    ev_b = build_evidence(b, full_text=_INV07_TEXT, currency="ZAR", gross_total="19730.55")
+    result = registry.check("INV-07.pdf", ev_b)
+    assert result.matched_against == "INV-04.pdf"
+
+
+def test_same_amount_but_different_invoice_evidence_not_duplicate(make_pdf):
+    # Same currency and gross_total, but genuinely different underlying
+    # text (different supplier, different line items) — similarity stays
+    # well below even the advisory bar, so this must not merge.
+    a = make_pdf("a.pdf", b"invoice one")
+    b = make_pdf("b.pdf", b"invoice two")
+    registry = DuplicateRegistry()
+    ev_a = build_evidence(
+        a, full_text="Acme Consulting Ltd\nProfessional services rendered in March\nHourly rate 150.00",
+        currency="EUR", gross_total="500.00",
+    )
+    registry.register("a.pdf", ev_a)
+    ev_b = build_evidence(
+        b, full_text="Zenith Office Supplies\nStationery order #4471\nBulk paper and toner delivery",
+        currency="EUR", gross_total="500.00",
+    )
+    result = registry.check("b.pdf", ev_b)
+    assert result.verdict != DuplicateVerdict.DUPLICATE_OF_BOOKED_PAYABLE
+
+
+def test_similar_template_different_transaction_not_duplicate(make_pdf):
+    # Same supplier/template/wording, but a DIFFERENT invoice number and
+    # DIFFERENT amount — a real recurring-invoice scenario. gross_total
+    # differs, so the high-confidence tier's exact-match requirement can
+    # never fire, regardless of how similar the surrounding template text is.
+    a = make_pdf("a.pdf", b"march invoice")
+    b = make_pdf("b.pdf", b"april invoice")
+    registry = DuplicateRegistry()
+    ev_a = build_evidence(
+        a, full_text="Northwind Services\nMonthly retainer\nInvoice No: 100\nTotal Due: EUR 500.00",
+        currency="EUR", gross_total="500.00",
+    )
+    registry.register("a.pdf", ev_a)
+    ev_b = build_evidence(
+        b, full_text="Northwind Services\nMonthly retainer\nInvoice No: 101\nTotal Due: EUR 525.00",
+        currency="EUR", gross_total="525.00",
+    )
+    result = registry.check("b.pdf", ev_b)
+    assert result.verdict != DuplicateVerdict.DUPLICATE_OF_BOOKED_PAYABLE
+
+
+def test_near_duplicate_missing_financial_corroboration_stays_advisory(make_pdf):
+    # High text similarity (above the advisory bar) but currency/gross_total
+    # not both available — must NOT be promoted, stays advisory only.
+    a = make_pdf("a.pdf", b"scan one, no financials extracted")
+    b = make_pdf("b.pdf", b"scan two, no financials extracted")
+    registry = DuplicateRegistry()
+    text = "Invoice No: 42\nSupplier: Acme Ltd\nTotal Due: EUR 500.00\nThank you for your business."
+    ev_a = build_evidence(a, full_text=text)  # currency/gross_total default to ""
+    registry.register("a.pdf", ev_a)
+    ev_b = build_evidence(b, full_text=text + "!")  # trivial variation, same missing financials
+    result = registry.check("b.pdf", ev_b)
+    assert result.verdict == DuplicateVerdict.ADVISORY
+    assert result.method == "near_duplicate"
+
+
+def test_existing_exact_and_business_key_duplicate_behavior_unchanged(make_pdf):
+    # Regression guard: file_hash/content_hash/business_key tiers must
+    # still fire exactly as before — the new tier is additive, checked
+    # only after those three tiers have already been tried and missed.
+    a = make_pdf("a.pdf", b"identical bytes")
+    b = make_pdf("b.pdf", b"identical bytes")
+    registry = DuplicateRegistry()
+    ev_a = build_evidence(a, full_text="Invoice 555")
+    registry.register("a.pdf", ev_a)
+    ev_b = build_evidence(b, full_text="Invoice 555")
+    result = registry.check("b.pdf", ev_b)
+    assert result.verdict == DuplicateVerdict.DUPLICATE_OF_BOOKED_PAYABLE
+    assert result.method == "file_hash"
+
+
+def test_high_confidence_promotion_is_deterministic_across_repeated_runs(make_pdf):
+    a = make_pdf("INV-04.pdf", b"scan one")
+    b = make_pdf("INV-07.pdf", b"scan two")
+
+    verdicts = []
+    for _ in range(3):
+        registry = DuplicateRegistry()
+        ev_a = build_evidence(a, full_text=_INV04_TEXT, currency="ZAR", gross_total="19730.55")
+        registry.register("INV-04.pdf", ev_a)
+        ev_b = build_evidence(b, full_text=_INV07_TEXT, currency="ZAR", gross_total="19730.55")
+        verdicts.append(registry.check("INV-07.pdf", ev_b).verdict)
+
+    assert verdicts == [DuplicateVerdict.DUPLICATE_OF_BOOKED_PAYABLE] * 3
+
+
+def test_high_confidence_threshold_is_stricter_than_advisory_threshold():
+    assert HIGH_CONFIDENCE_NEAR_DUPLICATE_SIMILARITY_THRESHOLD > 0.92

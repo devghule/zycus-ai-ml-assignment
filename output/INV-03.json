@@ -1,10 +1,51 @@
 {
   "file": "INV-03.pdf",
-  "payables": [],
-  "declined": [
+  "payables": [
     {
-      "doc_type": "invoice",
-      "reason": "INSUFFICIENT_EVIDENCE: financial.missing_currency: currency is blank on a payable"
+      "invoice_type": "INVOICE",
+      "currency": "ZAR",
+      "line_items": [
+        {
+          "description": "",
+          "item_type": "SERVICE",
+          "uom": "",
+          "quantity": "1",
+          "unit_price": "8550.00",
+          "total": "8550.00",
+          "discount": "",
+          "discount_percentage": "",
+          "tax_rate": "",
+          "tax_amount": "",
+          "taxes": []
+        }
+      ],
+      "taxes": [],
+      "discount_amount": "",
+      "freight_charges": "",
+      "insurance_charges": "",
+      "extra_charges": "",
+      "excise_duties": "",
+      "gross_total": "8550.00",
+      "invoice_number": "INV-75162461",
+      "invoice_date": "",
+      "due_date": "",
+      "supplier": {
+        "name": "",
+        "supplier_id": "",
+        "address": "",
+        "vat_id": ""
+      },
+      "buyer": {
+        "company_code": "",
+        "business_unit_code": "",
+        "location_code": ""
+      },
+      "payment_term_id": "",
+      "po_number": "",
+      "po_id": "",
+      "subtotal": "7434.78",
+      "total_tax_amount": ""
     }
-  ]
+  ],
+  "declined": []
 }

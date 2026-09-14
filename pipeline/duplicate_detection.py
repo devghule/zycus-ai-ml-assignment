@@ -43,6 +43,13 @@ class DuplicateEvidence:
     business_key: str = ""  # "" unless every required field was present
     has_copy_indicator: bool = False
     normalized_text: str = ""  # kept for near-duplicate similarity scoring only
+    # Kept alongside normalized_text specifically to support the
+    # high-confidence near-duplicate promotion below — NOT used to build
+    # business_key (which requires the full identity set) or any other
+    # existing check. "" means "not extracted", and never matches another
+    # "" (see _high_confidence_financial_match below).
+    currency: str = ""
+    gross_total: str = ""
 
 
 @dataclass
@@ -60,6 +67,26 @@ _COPY_INDICATOR_RE = re.compile(r"\b(copy|duplicate|reprint|copy\s+tax\s+invoice
 # regardless of score, so this threshold only controls whether the advisory
 # fires, never an auto-decline.
 NEAR_DUPLICATE_SIMILARITY_THRESHOLD = 0.92
+
+# High-confidence near-duplicate promotion (Combined Improvement Pass,
+# duplicate-resolution investigation): the ordinary near-duplicate check
+# above is deliberately advisory-only, because text similarity alone can't
+# distinguish "two scans of the same invoice" from "two different invoices
+# from the same supplier using the same template." Auto-decline requires
+# BOTH near-total textual identity (well above the advisory bar — corpus
+# evidence: INV-04 vs INV-07, two independently OCR'd scans of the same
+# underlying document, score 0.987; a genuinely different invoice from the
+# same template differs in invoice number, date, and amounts, which in
+# practice pushes similarity well below this bar) AND an EXACT match on
+# both currency and gross_total (both non-empty — matching "" against ""
+# proves nothing and is explicitly excluded). This is a conservative
+# conjunction of two independent signal families (textual + financial), not
+# a lowered similarity threshold and not "same amount alone."
+HIGH_CONFIDENCE_NEAR_DUPLICATE_SIMILARITY_THRESHOLD = 0.97
+
+
+def _exact_nonempty_match(a: str, b: str) -> bool:
+    return bool(a) and bool(b) and a.strip() == b.strip()
 
 
 def _normalize_text_for_hash(text: str) -> str:
@@ -131,6 +158,8 @@ def build_evidence(
         business_key=compute_business_key(supplier_identity, invoice_number, invoice_date, currency, gross_total),
         has_copy_indicator=detect_copy_indicator(full_text),
         normalized_text=_normalize_text_for_hash(full_text),
+        currency=currency,
+        gross_total=gross_total,
     )
 
 
@@ -194,25 +223,54 @@ class DuplicateRegistry:
                 f"already-booked document {prior.identifier!r}.",
             )
 
-        # Near-duplicate: advisory only, never auto-decline, per locked policy.
-        # Same same-file exclusion as above: segments from one bundled PDF
-        # naturally share boilerplate text and must not be compared against
-        # each other here.
+        # Near-duplicate: advisory only by default (locked policy) — EXCEPT
+        # the high-confidence promotion below, which requires independent
+        # corroboration from a second signal family (financial fields), not
+        # just a higher similarity number. Same same-file exclusion as
+        # above: segments from one bundled PDF naturally share boilerplate
+        # text and must not be compared against each other here.
         if evidence.normalized_text:
+            best_advisory: DuplicateCheck | None = None
             for prior in self._by_content_hash.values():
                 if prior.identifier == identifier:
                     continue
                 if not prior.evidence.normalized_text:
                     continue
                 score = text_similarity(evidence.normalized_text, prior.evidence.normalized_text)
-                if score >= NEAR_DUPLICATE_SIMILARITY_THRESHOLD:
+                if score < NEAR_DUPLICATE_SIMILARITY_THRESHOLD:
+                    continue
+
+                if (
+                    score >= HIGH_CONFIDENCE_NEAR_DUPLICATE_SIMILARITY_THRESHOLD
+                    and _exact_nonempty_match(evidence.currency, prior.evidence.currency)
+                    and _exact_nonempty_match(evidence.gross_total, prior.evidence.gross_total)
+                ):
+                    return DuplicateCheck(
+                        verdict=DuplicateVerdict.DUPLICATE_OF_BOOKED_PAYABLE,
+                        method="high_confidence_near_duplicate",
+                        matched_against=prior.identifier,
+                        reason=(
+                            f"High-confidence duplicate: near-total text similarity "
+                            f"(similarity={score:.3f}) AND exact matching currency "
+                            f"({evidence.currency}) AND exact matching gross_total "
+                            f"({evidence.gross_total}) against already-booked "
+                            f"{prior.identifier!r} — independent identity fields "
+                            f"(invoice number/date/supplier) were unavailable to build a "
+                            f"business-key match, but textual and financial corroboration "
+                            f"together are strong enough to auto-decline."
+                        ),
+                    )
+
+                if best_advisory is None:
                     reason = f"Near-duplicate text (similarity={score:.3f}) of {prior.identifier!r} — advisory only."
                     if evidence.has_copy_indicator:
                         reason += " Also carries a 'copy'-style indicator, but that alone is not sufficient evidence."
-                    return DuplicateCheck(
+                    best_advisory = DuplicateCheck(
                         verdict=DuplicateVerdict.ADVISORY, method="near_duplicate",
                         matched_against=prior.identifier, reason=reason,
                     )
+            if best_advisory is not None:
+                return best_advisory
 
         if evidence.has_copy_indicator:
             return DuplicateCheck(

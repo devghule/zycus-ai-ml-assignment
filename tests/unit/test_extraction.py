@@ -31,6 +31,43 @@ def test_extracts_labeled_total():
     assert result.fields.get("gross_total_raw") == "120.00"
 
 
+def test_repairs_currency_code_glued_to_digit():
+    # OCR-observed pattern (DU-06): "EUR153,58" with no space.
+    text = "TOTAL\nEUR153,58"
+    result = extract_from_text(text)
+    assert result.fields.get("currency") == "EUR"
+    assert result.fields.get("gross_total_raw") == "153,58"
+
+
+def test_repairs_total_label_glued_to_currency_code():
+    # OCR-observed pattern (INV-04): "TOTALZAR" with no space.
+    text = "Subtotal 17,157.00\nTOTALZAR 19,730.55"
+    result = extract_from_text(text)
+    assert result.fields.get("gross_total_raw") == "19,730.55"
+
+
+def test_repairs_amount_label_glued_to_currency_code():
+    # OCR-observed pattern (INV-04): "AmountZAR" with no space.
+    text = "AmountZAR 19,730.55"
+    result = extract_from_text(text)
+    assert result.fields.get("currency") == "ZAR"
+
+
+def test_total_label_recognizes_non_major_iso_currency_marker():
+    # _TOTAL_LABEL_RE previously only recognized EUR/USD/GBP as the optional
+    # currency marker between the label and the digits; SGD/ZAR/etc. left the
+    # amount unmatched even with a space present.
+    text = "Total SGD 771.66"
+    result = extract_from_text(text)
+    assert result.fields.get("gross_total_raw") == "771.66"
+
+
+def test_ghc_symbol_recognized_as_ghs():
+    text = "Total Tax Inclusive Value GHC8,045.40"
+    result = extract_from_text(text)
+    assert result.fields.get("currency") == "GHS"
+
+
 def test_extracts_total_labeled_gesamtsumme():
     text = "Gesamtsumme\n438,00\nzzgl. 0% MwSt\n0,00"
     result = extract_from_text(text)
@@ -167,6 +204,21 @@ def test_extracts_buyer_name_from_label():
     text = "Bill To: Northwind Operations OU\nAddress line"
     result = extract_from_text(text)
     assert result.fields.get("buyer_name") == "Northwind Operations OU"
+
+
+def test_seller_label_immediately_followed_by_another_label_is_rejected():
+    # OCR-observed pattern (DU-02): "SELLER" is directly followed by the
+    # line "SHIP TO", with the real company name two lines further down —
+    # the naive regex would otherwise capture "SHIP TO" itself as the name.
+    text = "SELLER\nSHIP TO\nNovatek U.S.LLC"
+    result = extract_from_text(text)
+    assert "supplier_name" not in result.fields
+
+
+def test_buyer_label_immediately_followed_by_another_label_is_rejected():
+    text = "Bill To:\nDeliver To\nSome Real Company Ltd"
+    result = extract_from_text(text)
+    assert "buyer_name" not in result.fields
 
 
 def test_extracts_vat_id_and_derives_country():

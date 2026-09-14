@@ -49,6 +49,10 @@ class ExtractedPayable:
 # recognizable label/pattern is actually found; everything else stays
 # absent from `fields` rather than guessed.
 
+_KNOWN_ISO_CURRENCY_CODES = (
+    "EUR|USD|GBP|CHF|THB|SGD|MYR|ZAR|KES|GHS|DKK|PLN|AUD|CAD|SEK|NOK|RON|VND|INR|JPY"
+)
+
 _CURRENCY_AMOUNT_RE = re.compile(
     r"(?:[$€£]|\bEUR\b|\bUSD\b|\bGBP\b)\s*([\d.,]+)|([\d.,]+)\s*(?:[$€£]|\bEUR\b|\bUSD\b|\bGBP\b)"
 )
@@ -60,12 +64,12 @@ _TOTAL_LABEL_RE = re.compile(
     # so adding them carries no new false-positive risk.
     r"\b(?:grand\s*total|total\s*due|amount\s*due|total|gesamtbetrag|gesamtsumme|endbetrag|"
     r"kokku|summa|total\s*a\s*pagar)\b"
-    r"[:\s]*(?:[$€£]|\bEUR\b|\bUSD\b|\bGBP\b)?\s*([\d.,]+)",
+    rf"[:\s]*(?:[$€£]|\b(?:{_KNOWN_ISO_CURRENCY_CODES})\b)?\s*([\d.,]+)",
     re.IGNORECASE,
 )
 _SUBTOTAL_LABEL_RE = re.compile(
     r"\b(?:sub\s*total|subtotal|net\s*total|vahesumma)\b"
-    r"[:\s]*(?:[$€£]|\bEUR\b|\bUSD\b|\bGBP\b)?\s*([\d.,]+)",
+    rf"[:\s]*(?:[$€£]|\b(?:{_KNOWN_ISO_CURRENCY_CODES})\b)?\s*([\d.,]+)",
     re.IGNORECASE,
 )
 _INVOICE_NUMBER_RE = re.compile(
@@ -123,16 +127,43 @@ _DUE_DATE_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 
-_CURRENCY_CODE_RE = re.compile(
-    r"\b(EUR|USD|GBP|CHF|THB|SGD|MYR|ZAR|KES|GHS|DKK|PLN|AUD|CAD|SEK|NOK|RON|VND|INR|JPY)\b"
-)
+_CURRENCY_CODE_RE = re.compile(rf"\b({_KNOWN_ISO_CURRENCY_CODES})\b")
 # Only currency SYMBOLS that are unambiguous in practice (a single currency
 # uses them) are extracted directly — "$" is deliberately excluded (it's
 # shared by USD/SGD/AUD/CAD/... and guessing would violate the "do not
 # guess ambiguous symbols" rule); an ISO code elsewhere on the page (caught
-# above) is the correct, unambiguous signal for $-using currencies.
-_UNAMBIGUOUS_CURRENCY_SYMBOL_RE = re.compile(r"[€£]")
-_SYMBOL_TO_ISO = {"€": "EUR", "£": "GBP"}
+# above) is the correct, unambiguous signal for $-using currencies. "GHC" is
+# the old (pre-2007 redenomination) Ghana Cedi symbol, still printed as-is
+# on real invoices in this corpus (confirmed: INV-19) even though the ISO
+# code / master-data code is "GHS" — this is a literal, unambiguous symbol
+# the document itself prints, not an inference from country/supplier.
+_UNAMBIGUOUS_CURRENCY_SYMBOL_RE = re.compile(r"[€£]|\bGHC\b")
+_SYMBOL_TO_ISO = {"€": "EUR", "£": "GBP", "GHC": "GHS"}
+
+# --- OCR "glue" normalization ------------------------------------------------
+# OCR frequently concatenates a currency ISO code directly against an
+# adjacent digit or label word with no intervening space (confirmed via
+# corpus audit — Combined Improvement Pass, recall investigation:
+# "EUR153,58" on DU-06, "AmountZAR"/"TOTALZAR" on INV-04). A plain \b-based
+# regex can never match across that boundary, because both the code and the
+# digit/letter on either side are \w characters with no transition between
+# them. This is purely a whitespace-repair step — it never invents or
+# changes any digit, only inserts a space at a boundary the OCR engine
+# itself failed to preserve. Restricted to the fixed, known ISO code list
+# above, so it cannot fire on unrelated text.
+_KNOWN_CURRENCY_MARKERS = f"{_KNOWN_ISO_CURRENCY_CODES}|GHC"
+_GLUE_CODE_THEN_DIGIT_RE = re.compile(rf"\b({_KNOWN_CURRENCY_MARKERS})(\d)")
+_GLUE_DIGIT_THEN_CODE_RE = re.compile(rf"(\d)({_KNOWN_CURRENCY_MARKERS})\b")
+_GLUE_LABEL_THEN_CODE_RE = re.compile(
+    rf"\b(total|subtotal|amount|sum)({_KNOWN_CURRENCY_MARKERS})\b", re.IGNORECASE
+)
+
+
+def _repair_ocr_glue(text: str) -> str:
+    text = _GLUE_CODE_THEN_DIGIT_RE.sub(r"\1 \2", text)
+    text = _GLUE_DIGIT_THEN_CODE_RE.sub(r"\1 \2", text)
+    text = _GLUE_LABEL_THEN_CODE_RE.sub(r"\1 \2", text)
+    return text
 
 # Supplier / buyer role labels, multilingual (STEP 8.5-equivalent for
 # extraction: label-first, then fall back to nothing rather than guessing).
@@ -146,6 +177,26 @@ _BUYER_LABEL_RE = re.compile(
     r"([A-Z][A-Za-z0-9&.,\-\s]{2,60}?)(?:\n|$)",
     re.IGNORECASE,
 )
+# A supplier/buyer LABEL is sometimes immediately followed by ANOTHER
+# label line rather than the actual company name (confirmed — corpus
+# audit, DU-02: "SELLER" is directly followed by the line "SHIP TO", with
+# the real company name two lines further down) — the regex above has no
+# way to know that "SHIP TO" isn't a name, since it's syntactically
+# identical to one (capitalized words). This is a small, fixed blocklist
+# of common shipping/logistics section headers that are never themselves a
+# company name; a candidate matching one is rejected (field stays blank)
+# rather than kept as a wrong value — consistent with "blank over
+# fabrication," just applied to a captured-but-wrong label rather than a
+# missing one.
+_GENERIC_NON_COMPANY_LABELS = frozenset({
+    "ship to", "ship from", "bill to", "bill from", "sold to", "deliver to",
+    "delivery to", "delivery address", "importer of record", "consignee",
+    "invoice notes", "shipment information", "invoice information",
+})
+
+
+def _looks_like_generic_label(candidate: str) -> bool:
+    return candidate.strip().lower() in _GENERIC_NON_COMPANY_LABELS
 _VAT_ID_RE = re.compile(
     r"\b(?:VAT|TAX\s*ID|USt-?ID|KMKR(?:\s*nr\.?)?|Tax\s*Registration)\s*(?:No\.?|Nr\.?|ID)?\s*[:\-]?\s*"
     r"([A-Z]{2}[A-Z0-9\-]{5,15})",
@@ -218,6 +269,7 @@ def extract_from_text(text: str) -> ExtractedPayable:
     if not stripped:
         result.confidence_notes.append("no text available to extract from")
         return result
+    stripped = _repair_ocr_glue(stripped)
 
     m = _INVOICE_NUMBER_RE.search(stripped)
     if m:
@@ -258,10 +310,10 @@ def extract_from_text(text: str) -> ExtractedPayable:
             result.fields["invoice_date_raw"] = next(iter(flat_dates))
 
     m = _SUPPLIER_LABEL_RE.search(stripped)
-    if m:
+    if m and not _looks_like_generic_label(m.group(1)):
         result.fields["supplier_name"] = m.group(1).strip().rstrip(",.")
     m = _BUYER_LABEL_RE.search(stripped)
-    if m:
+    if m and not _looks_like_generic_label(m.group(1)):
         result.fields["buyer_name"] = m.group(1).strip().rstrip(",.")
 
     # Real VAT/tax registration identifiers universally contain at least one

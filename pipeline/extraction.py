@@ -53,7 +53,13 @@ _CURRENCY_AMOUNT_RE = re.compile(
     r"(?:[$€£]|\bEUR\b|\bUSD\b|\bGBP\b)\s*([\d.,]+)|([\d.,]+)\s*(?:[$€£]|\bEUR\b|\bUSD\b|\bGBP\b)"
 )
 _TOTAL_LABEL_RE = re.compile(
-    r"\b(?:grand\s*total|total\s*due|amount\s*due|total|gesamtbetrag|kokku|summa|total\s*a\s*pagar)\b"
+    # "gesamtsumme" and "endbetrag" added alongside the existing
+    # "gesamtbetrag": all three are distinct, commonly-printed German total
+    # labels (found via corpus audit on INV-01 — Combined Improvement Pass,
+    # improve-document-understanding) and none is a substring of another,
+    # so adding them carries no new false-positive risk.
+    r"\b(?:grand\s*total|total\s*due|amount\s*due|total|gesamtbetrag|gesamtsumme|endbetrag|"
+    r"kokku|summa|total\s*a\s*pagar)\b"
     r"[:\s]*(?:[$€£]|\bEUR\b|\bUSD\b|\bGBP\b)?\s*([\d.,]+)",
     re.IGNORECASE,
 )

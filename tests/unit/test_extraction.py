@@ -31,6 +31,18 @@ def test_extracts_labeled_total():
     assert result.fields.get("gross_total_raw") == "120.00"
 
 
+def test_extracts_total_labeled_gesamtsumme():
+    text = "Gesamtsumme\n438,00\nzzgl. 0% MwSt\n0,00"
+    result = extract_from_text(text)
+    assert result.fields.get("gross_total_raw") == "438,00"
+
+
+def test_extracts_total_labeled_endbetrag():
+    text = "Endbetrag\n438,00"
+    result = extract_from_text(text)
+    assert result.fields.get("gross_total_raw") == "438,00"
+
+
 def test_empty_text_returns_no_fields():
     result = extract_from_text("")
     assert result.fields == {}

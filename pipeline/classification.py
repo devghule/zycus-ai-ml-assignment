@@ -112,6 +112,28 @@ _INTERNAL_APPROVAL_RE = re.compile(
     r"angebot|kostenvoranschlag|pakkumus)\b",
     re.IGNORECASE,
 )
+# Internal governance/compliance workflow forms (e.g. a donation/sponsorship
+# approval form) are a distinct non-payable class from the above: they can
+# still contain a currency amount and even the word "total", so they need
+# their own, deliberately NARROW multi-signal detector rather than relying
+# on the general invoice-vocabulary conflict check alone. Each individual
+# phrase here is specific enough that an ordinary invoice mentioning one of
+# them in passing (e.g. "approved by") would not match on its own — the
+# override only fires when MULTIPLE distinct phrases co-occur (see
+# _governance_workflow_score below), which is what actually distinguishes a
+# governance form from an invoice.
+_GOVERNANCE_WORKFLOW_RE = re.compile(
+    r"\b(donations?\s*and\s*sponsorship|sponsorship\s*(?:and|&)\s*donations?|"
+    r"charitable\s*contributions?|compliance\s*risk|requestor|"
+    r"group\s*cfo|group\s*ceo|group\s*compliance\s*officer|"
+    r"approve\W{0,3}reject|reject\W{0,3}approve)\b",
+    re.IGNORECASE,
+)
+# Minimum number of DISTINCT governance-workflow phrases required before
+# this overrides ordinary invoice-like evidence — one phrase alone is not
+# enough (keeps this narrow; a real invoice with a single incidental match
+# must not be rejected).
+_GOVERNANCE_WORKFLOW_MIN_DISTINCT_HITS = 2
 
 # Minimum amount of extracted text (across the segment) needed before we're
 # willing to make any positive-or-negative call at all.
@@ -197,6 +219,26 @@ def classify_segment_from_text(text: str, evidence_hint: str = "") -> Classifica
     if _INTERNAL_APPROVAL_RE.search(stripped):
         negative_score += 2
         evidence.append("internal approval/quotation vocabulary")
+
+    governance_hits = {m.group(0).lower() for m in _GOVERNANCE_WORKFLOW_RE.finditer(stripped)}
+    if len(governance_hits) >= _GOVERNANCE_WORKFLOW_MIN_DISTINCT_HITS:
+        evidence.append(f"internal governance/compliance workflow vocabulary ({len(governance_hits)} distinct phrases)")
+        # A strong, MULTI-signal governance-workflow match overrides even
+        # substantial positive/monetary evidence: this is a fundamentally
+        # different document class from an invoice (a currency amount and a
+        # "total" label are the exception, not evidence of a commercial
+        # transaction, on this class of internal form). Checked before the
+        # ordinary positive/negative-score comparisons below so it cannot be
+        # outvoted by a bare monetary total.
+        return Classification(
+            doc_class=DocumentClass.NON_PAYABLE,
+            doc_type="internal_approval_form",
+            reason="Internal governance/compliance workflow vocabulary (multiple distinct signals) "
+            "dominates — this is an internal approval form, not a supplier invoice, regardless of "
+            "any currency amount present.",
+            confidence=0.85,
+            evidence=evidence,
+        )
 
     # Credit memo takes priority when its vocabulary is present alongside
     # payable-ish structure (it IS a payable-adjacent document, just the

@@ -241,3 +241,90 @@ def test_invoice_number_bare_title_with_no_label_anywhere_stays_blank():
     text = "ARVE\nkokku: 400.00 EUR"
     result = extract_from_text(text)
     assert "invoice_number" not in result.fields
+
+
+# --- Phase 2 (improve-document-understanding): PO false-positive regressions
+
+def test_po_not_captured_from_country_name_portugal():
+    """Regression: 'PORTUGAL' must not yield 'RTUGAL' as a PO number."""
+    text = "Consignee address: Lisbon, PORTUGAL\nTotal: 100.00"
+    result = extract_from_text(text)
+    assert "po_number" not in result.fields
+
+
+def test_po_not_captured_from_po_box_address():
+    """Regression: 'P.O Box 14108' (a postal address) must not yield
+    'Box14108' as a PO reference."""
+    text = "Supplier address: P.OBox14108, Nairobi, Kenya\nTotal: 100.00"
+    result = extract_from_text(text)
+    assert "po_number" not in result.fields
+
+
+def test_po_not_captured_from_shipper_field_running_into_company_name():
+    """Regression: 'SHPR:POIVexDISTRIBUTIONGMBH&CO.KG' must not yield
+    'IVexDISTRIBUTIONGMBH' as a PO number."""
+    text = "SHPR:POIVexDISTRIBUTIONGMBH&CO.KG\nTotal: 100.00"
+    result = extract_from_text(text)
+    assert "po_number" not in result.fields
+
+
+def test_po_still_captured_with_genuine_estonian_label():
+    text = "Tellimus #2287\nTotal: 100.00"
+    result = extract_from_text(text)
+    assert result.fields.get("po_number") == "2287"
+
+
+def test_po_still_captured_with_dotted_label_and_number_suffix():
+    text = "P.O. Number: PO-EE-2026-0044\nInvoice No: 555"
+    result = extract_from_text(text)
+    assert result.fields.get("po_number") == "PO-EE-2026-0044"
+
+
+# --- Phase 2 (improve-document-understanding): VAT-ID false-positive regressions
+
+def test_vat_id_not_captured_from_table_column_header():
+    """Regression: 'Amount, GBP' (a table column header, OCR-concatenated
+    to 'AmountGBP') must not become a VAT ID — real VAT IDs always contain
+    at least one digit; this candidate has none."""
+    text = "VAT\nAmountGBP\nSome line item here."
+    result = extract_from_text(text)
+    assert "supplier_vat_id" not in result.fields
+
+
+def test_vat_id_still_captured_when_genuinely_present():
+    text = "VAT No: DE209177122\nSome invoice text"
+    result = extract_from_text(text)
+    assert result.fields.get("supplier_vat_id") == "DE209177122"
+    assert result.fields.get("supplier_country") == "DE"
+
+
+# --- Phase 2 (improve-document-understanding): DU-11 Estonian tax-summary --
+
+def test_estonian_net_base_and_vat_line_extracted_together():
+    """DU-11 class: 'Summa km-ta' (net base) + 'KM<rate>%' (VAT line),
+    exactly as OCR concatenates them in the real document."""
+    text = "Kreeditarve nr 6265-K\nSummakm-ta22%\n-327,87\nKM22%\n-72,13\nArve kokku (EUR)\n-400,00"
+    result = extract_from_text(text)
+    assert result.fields.get("subtotal_raw") == "-327,87"
+    taxes = result.fields.get("header_taxes_raw")
+    assert taxes and taxes[0]["tax_type"] == "VAT"
+    assert taxes[0]["tax_rate_raw"] == "22"
+    assert taxes[0]["tax_amount_raw"] == "-72,13"
+
+
+def test_estonian_net_base_alone_does_not_fire_without_vat_line():
+    """Fail-safe: the net-base anchor alone (no matching VAT line) must not
+    produce a partial/guessed structure."""
+    text = "Summakm-ta\n-327,87\nArve kokku (EUR)\n-400,00"
+    result = extract_from_text(text)
+    assert "subtotal_raw" not in result.fields
+    assert "header_taxes_raw" not in result.fields
+
+
+def test_bare_km_without_net_base_anchor_does_not_misfire_as_kilometers():
+    """A document mentioning distance in km (with an incidental percent
+    sign nearby, e.g. '50% of the 22km route') must not trigger the
+    Estonian VAT fallback, since the net-base anchor phrase is absent."""
+    text = "Distance: 22km\nFuel usage: 50%\nTotal: 100.00"
+    result = extract_from_text(text)
+    assert "header_taxes_raw" not in result.fields

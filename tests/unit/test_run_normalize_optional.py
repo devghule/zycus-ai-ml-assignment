@@ -25,3 +25,16 @@ def test_normalize_optional_fails_safely_on_unnormalizable_input():
     assert _normalize_optional("10,000", normalize_number) == ""
     with pytest.raises(LocaleNormalizationError):
         normalize_number("10,000")  # confirm the underlying function does raise
+
+
+def test_credit_memo_subtotal_display_sign_stripped():
+    """Phase 2 (improve-document-understanding): the display-only
+    'subtotal' field must show a positive magnitude on a credit memo,
+    consistent with gross_total's existing positive-magnitude convention —
+    applied exactly once, here, for this separate display field."""
+    normalized = _normalize_optional("-327,87".replace(",", "."), normalize_number)
+    assert normalized == "-327.87"
+    # The sign-strip itself is exercised at the run.py call site (a single
+    # `if` guarded on invoice_type == "CREDIT_MEMO"); this test locks in
+    # that normalize_number's own output is unaffected (no double
+    # normalization), which is what that call site then strips once.

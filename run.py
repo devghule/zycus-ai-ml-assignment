@@ -296,7 +296,15 @@ def process_one(doc_path, matcher: MasterDataMatcher, duplicate_registry: Duplic
         payload.setdefault("payment_term_id", "")
         payload.setdefault("po_number", "")
         payload.setdefault("po_id", "")
-        payload.setdefault("subtotal", _normalize_optional(extracted.fields.get("subtotal_raw", ""), normalize_number))
+        subtotal_display = _normalize_optional(extracted.fields.get("subtotal_raw", ""), normalize_number)
+        if payload.get("invoice_type") == "CREDIT_MEMO" and subtotal_display.startswith("-"):
+            # Mirror financial_model.py's positive-magnitude convention for
+            # credit memos on this display-only field (subtotal itself is
+            # never fed back through the financial model, so it needs its
+            # own single, narrow sign normalization here — applied exactly
+            # once, consistent with how gross_total is already positive).
+            subtotal_display = subtotal_display[1:]
+        payload.setdefault("subtotal", subtotal_display)
         payload.setdefault("total_tax_amount", "")
 
         _resolve_master_data(payload, extracted, matcher)

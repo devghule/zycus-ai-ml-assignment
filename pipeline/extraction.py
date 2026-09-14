@@ -81,7 +81,22 @@ _PHONE_LIKE_RE = re.compile(r"^[+]?\d[\d\s\-]{6,}$")
 _DATE_LIKE_RE = re.compile(r"^\d{1,4}[./\-]\d{1,2}[./\-]\d{1,4}$")
 
 _PO_NUMBER_RE = re.compile(
-    r"\b(?:p\.?\s*o\.?|purchase\s*order|tellimus)\s*(?:no\.?|number|#)?\s*[:\-]?\s*"
+    # Two conditions, both required, fix a real false-positive class found
+    # via corpus audit (Phase 2, improve-document-understanding):
+    # "PORTUGAL" -> "RTUGAL", "P.OBox14108" -> "Box14108",
+    # "SHPR:POIVexDISTRIBUTIONGMBH" -> "IVexDISTRIBUTIONGMBH".
+    #   1. (?![A-Za-z]) immediately after the label token: the character
+    #      right after "PO"/"P.O"/"purchase order"/"tellimus" must NOT be a
+    #      letter, so the 2-letter "PO" label can never blend into the next
+    #      word of running OCR text (a plain \b here is insufficient, since
+    #      an optional trailing "." on "P.O." leaves a non-word/non-word
+    #      boundary that \b would also reject on the legitimate case).
+    #   2. The number-indicator suffix (No./Number/#) is now REQUIRED, not
+    #      optional — the same proven fix already applied to
+    #      _INVOICE_NUMBER_RE in Phase 11, for the same reason: without a
+    #      real suffix there is no positive signal that a value actually
+    #      follows, only a bare label.
+    r"\b(?:p\.?\s*o\.?|purchase\s*order|tellimus)(?![A-Za-z])\s*(?:no\.?|number|#)\s*[:\-]?\s*"
     r"([A-Za-z0-9][A-Za-z0-9\-/]{2,30})",
     re.IGNORECASE,
 )
@@ -142,6 +157,33 @@ _PAYMENT_TERMS_LABEL_RE = re.compile(
 _HEADER_TAX_RE = re.compile(
     r"\b(VAT|IVA|MwSt|GST|SST|K[äa]ibemaks|Tax)\b\D{0,10}?(\d{1,2}(?:[.,]\d+)?)\s*%"
     r"(?:[^\d\n]{0,15}([\d.,]+))?",
+    re.IGNORECASE,
+)
+
+# --- Narrow Estonian tax-summary support (DU-11 class) -----------------------
+# "Summa km-ta" = the tax-EXCLUSIVE (net) amount; the VAT line beneath it is
+# often abbreviated bare "KM<rate>%" rather than spelled "Käibemaks". Bare
+# "KM" is deliberately NOT added to the general _HEADER_TAX_RE alternation
+# above: "km" is also the ordinary abbreviation for kilometers, so accepting
+# it generically would risk false positives on unrelated documents. It is
+# only safe to interpret "KM<digits>%" as a VAT line when it appears
+# alongside the much more specific "summa km-ta" net-base anchor phrase,
+# which is not a generic multilingual tax-parser redesign — it is a single,
+# narrowly-gated fallback that only ever fires when BOTH signals are found
+# together (see the caller below).
+_ESTONIAN_NET_BASE_RE = re.compile(
+    # No trailing \b after "ta": OCR frequently concatenates the label
+    # directly against a following rate/percent with no separating space
+    # (e.g. "Summakm-ta22%"), and digits count as word characters, so a \b
+    # there would (incorrectly) require a non-word character immediately
+    # after "ta" — rejecting exactly the real-world case this exists to
+    # match. There is no false-positive risk from omitting it here (unlike
+    # the PO-label fix above): this phrase is specific enough on its own.
+    r"\bsumma\s*km[\s\-]*ta\s*(?:\d{1,2}(?:[.,]\d+)?\s*%)?\D{0,10}?([\-\d.,]+)",
+    re.IGNORECASE,
+)
+_ESTONIAN_VAT_LINE_RE = re.compile(
+    r"\bkm\s*(\d{1,2}(?:[.,]\d+)?)\s*%\D{0,10}?([\-\d.,]+)",
     re.IGNORECASE,
 )
 
@@ -216,7 +258,20 @@ def extract_from_text(text: str) -> ExtractedPayable:
     if m:
         result.fields["buyer_name"] = m.group(1).strip().rstrip(",.")
 
-    vat_matches = list(_VAT_ID_RE.finditer(stripped))
+    # Real VAT/tax registration identifiers universally contain at least one
+    # digit after the country-code prefix (confirmed against every VAT
+    # format in master_data/suppliers.json). A candidate with NO digit at
+    # all is not a VAT id — it's virtually always a table/document header
+    # caught by the regex's re.IGNORECASE flag treating any two letters as
+    # a plausible "country code" (e.g. "AmountGBP", a "Amount, GBP" column
+    # header, found via corpus audit — Phase 2, improve-document-understanding).
+    # This is a narrow structural rejection, not an attempt at general VAT
+    # validation — it only rejects candidates that could not possibly be a
+    # real identifier, never second-guesses a candidate that has a digit.
+    def _looks_like_real_vat_id(candidate: str) -> bool:
+        return any(ch.isdigit() for ch in candidate)
+
+    vat_matches = [m for m in _VAT_ID_RE.finditer(stripped) if _looks_like_real_vat_id(m.group(1))]
     if vat_matches:
         # First VAT-labeled id found is treated as the supplier's (the
         # supplier block conventionally appears before the buyer's tax id
@@ -266,6 +321,23 @@ def extract_from_text(text: str) -> ExtractedPayable:
         )
     if header_taxes:
         result.fields["header_taxes_raw"] = header_taxes
+
+    if "subtotal_raw" not in result.fields and "header_taxes_raw" not in result.fields:
+        # Narrow Estonian tax-summary fallback — only fires when BOTH the
+        # net-base anchor AND a matching VAT-rate line are found; either
+        # alone leaves the fields untouched (fail safe, per Phase 6/7
+        # policy: no partial/guessed structure).
+        net_m = _ESTONIAN_NET_BASE_RE.search(stripped)
+        vat_m = _ESTONIAN_VAT_LINE_RE.search(stripped)
+        if net_m and vat_m:
+            result.fields["subtotal_raw"] = net_m.group(1)
+            result.fields["header_taxes_raw"] = [
+                {
+                    "tax_type": "VAT",
+                    "tax_rate_raw": vat_m.group(1).replace(",", "."),
+                    "tax_amount_raw": vat_m.group(2),
+                }
+            ]
 
     if not result.fields:
         result.confidence_notes.append("no extractable fields found in available text")

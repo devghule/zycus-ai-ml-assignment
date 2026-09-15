@@ -198,11 +198,26 @@ _GENERIC_NON_COMPANY_LABELS = frozenset({
 def _looks_like_generic_label(candidate: str) -> bool:
     return candidate.strip().lower() in _GENERIC_NON_COMPANY_LABELS
 _VAT_ID_RE = re.compile(
-    r"\b(?:VAT|TAX\s*ID|USt-?ID|KMKR(?:\s*nr\.?)?|Tax\s*Registration)\s*(?:No\.?|Nr\.?|ID)?\s*[:\-]?\s*"
+    # "VAT Registration" added alongside the existing "Tax Registration" —
+    # without it, the bare "VAT" alternative matches first and the
+    # following word "Registration" (not one of the recognized No./Nr./ID
+    # suffixes) gets swallowed by the greedy ID-capture group itself,
+    # producing a bogus candidate ("Registration") and leaving the real id
+    # afterward unreachable (no label token precedes it once the match has
+    # already consumed past "VAT"). Confirmed on real corpus text — DU-10's
+    # own label is "VAT Registration No.:GB726874417".
+    r"\b(?:VAT\s*Registration|VAT|TAX\s*ID|USt-?ID|KMKR(?:\s*nr\.?)?|Tax\s*Registration)"
+    r"\s*(?:No\.?|Nr\.?|ID)?\s*[:\-]?\s*"
     r"([A-Z]{2}[A-Z0-9\-]{5,15})",
     re.IGNORECASE,
 )
 _ISO2_PREFIX_RE = re.compile(r"^([A-Z]{2})")
+# How far past a Buyer/Bill To/Sold To label a VAT id may appear and still
+# be treated as belonging to that buyer's own address block, not some
+# unrelated later section (bank details, a third-party agent, etc.) —
+# generous enough to span a short address (name, street, city, postcode)
+# but bounded, not "anywhere later in the document."
+_BUYER_COUNTRY_PROXIMITY_CHARS = 200
 
 _PAYMENT_TERMS_LABEL_RE = re.compile(
     r"\b(?:payment\s*terms?|terms\s*of\s*payment|tasumistingimus)\s*[:\-]?\s*([A-Za-z0-9 ]{2,30})",
@@ -211,9 +226,39 @@ _PAYMENT_TERMS_LABEL_RE = re.compile(
 
 # Header-level tax: a label (VAT/IVA/MwSt/GST/SST/Käibemaks) with a percent
 # rate, optionally followed by an explicit amount on the same line.
+# Trailing boundary uses (?-i:(?![a-z])) rather than a plain \b — the same
+# fix already applied to currency codes and credit-memo detection
+# elsewhere in this module: OCR commonly glues the label directly against
+# the following rate with no space (confirmed on real corpus text — DU-10:
+# "VAT20%"), and \b fails there since "T" and "2" are both word
+# characters. (?-i:...) locally disables the module-level IGNORECASE flag
+# for the lookahead only, so [a-z] doesn't also (wrongly) match uppercase.
 _HEADER_TAX_RE = re.compile(
-    r"\b(VAT|IVA|MwSt|GST|SST|K[äa]ibemaks|Tax)\b\D{0,10}?(\d{1,2}(?:[.,]\d+)?)\s*%"
+    r"\b(VAT|IVA|MwSt|GST|SST|K[äa]ibemaks|Tax)(?-i:(?![a-z]))\D{0,10}?(\d{1,2}(?:[.,]\d+)?)\s*%"
     r"(?:[^\d\n]{0,15}([\d.,]+))?",
+    re.IGNORECASE,
+)
+# "TOTAL VAT <amount>" — a stated tax total with no adjacent percent rate
+# (see the call site below for the two-document corpus evidence this is
+# based on). "TOTAL" itself must be glue-tolerant too (confirmed:
+# "TOTALVAT" with zero spaces on both real documents). The trailing
+# (?!\s*%) is required: without it this pattern collides with a RATE
+# rather than an amount — confirmed on real corpus text, INV-14:
+# "TotalVAT20%" is a 20% rate (correctly _HEADER_TAX_RE's job), but before
+# this guard was added it was captured here as a bogus tax_amount_raw of
+# "20", producing a wrong tax structure that broke ERP reconciliation for
+# an otherwise-correct existing payable — found via full-corpus regression
+# testing, not assumed.
+_TOTAL_TAX_AMOUNT_ONLY_RE = re.compile(
+    # (?>...) is an ATOMIC group (Python 3.11+): without it, a plain
+    # [\d.,]+ backtracks one digit at a time to satisfy the trailing
+    # (?!\s*%) — confirmed: on "20%", a non-atomic group first tries "20"
+    # (rejected, % follows), then backtracks to "2" (accepted, since "0%"
+    # doesn't start with "%"), silently capturing the wrong, truncated
+    # value "2" instead of correctly matching nothing at all. Atomic
+    # grouping forbids that backtrack, so a rate like "20%" is correctly
+    # rejected in full rather than partially misread.
+    r"\bTOTAL\s*(VAT|IVA|MwSt|GST|SST|Tax)(?-i:(?![a-z]))\s*[:\-]?\s*(?>([\d.,]+))(?!\s*%)",
     re.IGNORECASE,
 )
 
@@ -342,6 +387,35 @@ def extract_from_text(text: str) -> ExtractedPayable:
         if country_match:
             result.fields["supplier_country"] = country_match.group(1)
 
+    # Buyer country (Combined Improvement Pass, final targeted correction):
+    # only ever derived from an EXPLICIT VAT/tax-registration id — the same
+    # already-established, already-tested mechanism used for
+    # supplier_country above — found within a bounded proximity window
+    # after an explicit Buyer/Bill To/Sold To/Customer label. This
+    # generalizes to any document with that structure; it does not attempt
+    # to resolve a free-text country name (e.g. "SOUTH AFRICA" ->  "ZA"),
+    # since no such alias infrastructure exists in
+    # pipeline/matching/normalize.py and inventing one here would be
+    # exactly the kind of unsupported inference this pass must avoid. A
+    # document whose buyer identity is only implied by layout position,
+    # with no explicit label, or whose nearby VAT id carries no country
+    # prefix (e.g. many South African VAT numbers), correctly yields no
+    # buyer_country at all — blank is the honest answer there, not a gap
+    # to paper over.
+    m = _BUYER_LABEL_RE.search(stripped)
+    if m:
+        window = stripped[m.end():m.end() + _BUYER_COUNTRY_PROXIMITY_CHARS]
+        for vm in _VAT_ID_RE.finditer(window):
+            candidate = vm.group(1).strip()
+            if not _looks_like_real_vat_id(candidate):
+                continue
+            if candidate == result.fields.get("supplier_vat_id", ""):
+                continue  # the same id already attributed to the supplier
+            country_match = _ISO2_PREFIX_RE.match(candidate)
+            if country_match:
+                result.fields["buyer_country"] = country_match.group(1)
+            break
+
     m = _PAYMENT_TERMS_LABEL_RE.search(stripped)
     if m:
         result.fields["payment_term_text"] = m.group(1).strip()
@@ -379,6 +453,27 @@ def extract_from_text(text: str) -> ExtractedPayable:
         )
     if header_taxes:
         result.fields["header_taxes_raw"] = header_taxes
+
+    # "TOTAL VAT <amount>" header-tax fallback (final targeted correction):
+    # a stated tax AMOUNT with no adjacent rate — distinct from
+    # _HEADER_TAX_RE above, which requires a percent sign. Confirmed on
+    # TWO independent real documents sharing this exact template pattern
+    # (INV-03: "Subtotal 7,434.78 / TOTALVAT 1,115.22 / TOTALZAR 8,550.00";
+    # INV-04: "Subtotal 17,157.00 / TOTALVAT 2,573.55 / TOTALZAR 19,730.55")
+    # — a genuinely generalizable structural pattern, not a one-off. Only
+    # fires when a subtotal was ALSO found (never a bare amount with no
+    # base to relate it to) and no rate-based header tax already matched,
+    # so it can never silently override a stronger, already-extracted rate.
+    if "subtotal_raw" in result.fields and "header_taxes_raw" not in result.fields:
+        tv_m = _TOTAL_TAX_AMOUNT_ONLY_RE.search(stripped)
+        if tv_m:
+            result.fields["header_taxes_raw"] = [
+                {
+                    "tax_type": tv_m.group(1).upper() if tv_m.group(1).upper() != "TAX" else "VAT",
+                    "tax_rate_raw": "",
+                    "tax_amount_raw": tv_m.group(2),
+                }
+            ]
 
     if "subtotal_raw" not in result.fields and "header_taxes_raw" not in result.fields:
         # Narrow Estonian tax-summary fallback — only fires when BOTH the

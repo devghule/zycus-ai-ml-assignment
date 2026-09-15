@@ -68,6 +68,66 @@ def test_ghc_symbol_recognized_as_ghs():
     assert result.fields.get("currency") == "GHS"
 
 
+# --- Explicit tax structure (final targeted correction) ----------------------
+
+def test_header_tax_rate_glued_to_label_is_recognized():
+    # OCR-observed pattern (DU-10): "VAT20%" with no space.
+    text = "NetAmount 4230.14\nVAT20%\n846.03\nTotal 5076.17"
+    result = extract_from_text(text)
+    taxes = result.fields.get("header_taxes_raw")
+    assert taxes and taxes[0]["tax_rate_raw"] == "20"
+
+
+def test_total_vat_amount_only_extracted_when_subtotal_present():
+    # Real pattern shared by INV-03 and INV-04: "Subtotal X / TOTALVAT Y /
+    # TOTAL<currency> Z" — no percent rate anywhere, only a stated amount.
+    text = "Subtotal\n7,434.78\nTOTALVAT\n1,115.22\nTOTALZAR\n8,550.00"
+    result = extract_from_text(text)
+    assert result.fields.get("subtotal_raw") == "7,434.78"
+    taxes = result.fields.get("header_taxes_raw")
+    assert taxes == [{"tax_type": "VAT", "tax_rate_raw": "", "tax_amount_raw": "1,115.22"}]
+
+
+def test_subtotal_plus_tax_reconciles_to_gross_for_inv04_pattern():
+    text = "Subtotal\n17,157.00\nTOTALVAT\n2,573.55\nTOTALZAR\n19,730.55"
+    result = extract_from_text(text)
+    subtotal = float(result.fields["subtotal_raw"].replace(",", ""))
+    tax = float(result.fields["header_taxes_raw"][0]["tax_amount_raw"].replace(",", ""))
+    gross = float(result.fields["gross_total_raw"].replace(",", ""))
+    assert round(subtotal + tax, 2) == round(gross, 2)
+
+
+def test_total_vat_amount_only_does_not_fire_without_subtotal():
+    # No subtotal anywhere in the text — the amount-only tax fallback must
+    # not fire on a bare total-tax amount with nothing to relate it to.
+    text = "TOTALVAT\n1,115.22\nTotal\n8,550.00"
+    result = extract_from_text(text)
+    assert "header_taxes_raw" not in result.fields
+
+
+def test_total_vat_amount_only_does_not_misread_a_glued_rate_as_an_amount():
+    # Real regression found via full-corpus testing (INV-14): "TotalVAT20%"
+    # is a 20% RATE, not a stated amount — before the (?!\s*%) guard (and
+    # the atomic group needed to make it actually work), this fallback
+    # captured "20" as a bogus tax_amount_raw, which broke ERP
+    # reconciliation for an otherwise-correct existing payable.
+    text = "Subtotal\n26,042.68\nTotalVAT20%\nInvoiceTotal GBP\n29,253.72"
+    result = extract_from_text(text)
+    assert "header_taxes_raw" not in result.fields
+
+
+def test_tax_like_unrelated_text_does_not_create_a_tax():
+    text = "Invoice No: 42\nSupplier: Acme Ltd\nTotal Due: EUR 500.00\nTaxi fare reimbursement note."
+    result = extract_from_text(text)
+    assert "header_taxes_raw" not in result.fields
+
+
+def test_missing_tax_remains_absent():
+    text = "Subtotal\n100.00\nTotal\n100.00"
+    result = extract_from_text(text)
+    assert "header_taxes_raw" not in result.fields
+
+
 def test_extracts_total_labeled_gesamtsumme():
     text = "Gesamtsumme\n438,00\nzzgl. 0% MwSt\n0,00"
     result = extract_from_text(text)
@@ -213,6 +273,87 @@ def test_seller_label_immediately_followed_by_another_label_is_rejected():
     text = "SELLER\nSHIP TO\nNovatek U.S.LLC"
     result = extract_from_text(text)
     assert "supplier_name" not in result.fields
+
+
+# --- Buyer country (final targeted correction) -------------------------------
+
+def test_explicit_buyer_country_extracted_from_vat_id_near_label():
+    text = (
+        "Supplier: Acme GmbH\nVAT: DE209177122\n"
+        "Bill To: Northwind Services UK Limited\n"
+        "211 Old St, London EC1V 9NR\nVAT Registration No.: GB726874417\n"
+        "Total: 100.00"
+    )
+    result = extract_from_text(text)
+    assert result.fields.get("buyer_country") == "GB"
+
+
+def test_unique_country_to_bu_mapping_end_to_end():
+    from pipeline.matching.chart_of_books import ChartOfBooksIndex
+
+    text = (
+        "Supplier: Acme GmbH\nVAT: DE209177122\n"
+        "Bill To: Northwind Services UK Limited\n"
+        "211 Old St, London EC1V 9NR\nVAT Registration No.: GB726874417\n"
+        "Total: 100.00"
+    )
+    result = extract_from_text(text)
+    matcher = ChartOfBooksIndex()
+    match = matcher.match_by_buyer_country(result.fields["buyer_country"])
+    assert match.status.value == "MATCHED"
+    assert match.matched_id == "GB001"
+
+
+def test_ambiguous_buyer_country_bu_mapping_stays_blank():
+    # Estonia has two business units in chart_of_books.json — even with a
+    # clean buyer_country extraction, the matcher itself must refuse to
+    # pick one, per the existing locked policy this pass does not change.
+    from pipeline.matching.chart_of_books import ChartOfBooksIndex
+
+    text = (
+        "Supplier: Acme GmbH\nVAT: DE209177122\n"
+        "Bill To: Northwind Operations OU\n"
+        "Kadaka tee 1, Tallinn\nVAT Registration No.: EE398766194\n"
+        "Total: 100.00"
+    )
+    result = extract_from_text(text)
+    assert result.fields.get("buyer_country") == "EE"
+    matcher = ChartOfBooksIndex()
+    match = matcher.match_by_buyer_country(result.fields["buyer_country"])
+    assert match.status.value == "AMBIGUOUS"
+
+
+def test_currency_does_not_create_buyer_country():
+    text = "Bill To: Some Buyer\nNo address details\nCurrency: GBP\nTotal: 100.00"
+    result = extract_from_text(text)
+    assert "buyer_country" not in result.fields
+
+
+def test_supplier_country_does_not_leak_into_buyer_country():
+    # Only one VAT id exists in the whole document (the supplier's) — it
+    # must never be reused/duplicated as the buyer's country.
+    text = "Supplier: Acme GmbH\nVAT: DE209177122\nBill To: Some Buyer\nNo VAT for the buyer here."
+    result = extract_from_text(text)
+    assert result.fields.get("supplier_country") == "DE"
+    assert "buyer_country" not in result.fields
+
+
+def test_buyer_country_absent_without_explicit_buyer_label():
+    # No "Bill To"/"Buyer"/"Sold To"/"Customer" label at all — even if a
+    # second VAT id happens to appear later in the document, it must not
+    # be attributed to a buyer that was never explicitly labeled.
+    text = "VAT: DE209177122\nSome company\nVAT Registration No.: GB726874417\nTotal: 100.00"
+    result = extract_from_text(text)
+    assert "buyer_country" not in result.fields
+
+
+def test_buyer_vat_without_country_prefix_yields_no_buyer_country():
+    # A real-corpus pattern (South African VAT numbers carry no ISO-2
+    # prefix): the buyer's own VAT id is present but not country-coded —
+    # correctly yields no buyer_country rather than guessing.
+    text = "Bill To: Cloverdale Print Ltd\nVAT Number: 9446639440\nTotal: 100.00"
+    result = extract_from_text(text)
+    assert "buyer_country" not in result.fields
 
 
 def test_buyer_label_immediately_followed_by_another_label_is_rejected():

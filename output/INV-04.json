@@ -10,8 +10,8 @@
           "item_type": "SERVICE",
           "uom": "",
           "quantity": "1",
-          "unit_price": "19730.55",
-          "total": "19730.55",
+          "unit_price": "17157.00",
+          "total": "17157.00",
           "discount": "",
           "discount_percentage": "",
           "tax_rate": "",
@@ -19,7 +19,15 @@
           "taxes": []
         }
       ],
-      "taxes": [],
+      "taxes": [
+        {
+          "tax_type": "VAT",
+          "tax_name": "VAT",
+          "tax_rate": "",
+          "tax_amount": "2573.55",
+          "tax_type_code": ""
+        }
+      ],
       "discount_amount": "",
       "freight_charges": "",
       "insurance_charges": "",

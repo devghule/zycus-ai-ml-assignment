@@ -49,17 +49,27 @@ class ExtractedPayable:
 # recognizable label/pattern is actually found; everything else stays
 # absent from `fields` rather than guessed.
 
+_KNOWN_ISO_CURRENCY_CODES = (
+    "EUR|USD|GBP|CHF|THB|SGD|MYR|ZAR|KES|GHS|DKK|PLN|AUD|CAD|SEK|NOK|RON|VND|INR|JPY"
+)
+
 _CURRENCY_AMOUNT_RE = re.compile(
     r"(?:[$€£]|\bEUR\b|\bUSD\b|\bGBP\b)\s*([\d.,]+)|([\d.,]+)\s*(?:[$€£]|\bEUR\b|\bUSD\b|\bGBP\b)"
 )
 _TOTAL_LABEL_RE = re.compile(
-    r"\b(?:grand\s*total|total\s*due|amount\s*due|total|gesamtbetrag|kokku|summa|total\s*a\s*pagar)\b"
-    r"[:\s]*(?:[$€£]|\bEUR\b|\bUSD\b|\bGBP\b)?\s*([\d.,]+)",
+    # "gesamtsumme" and "endbetrag" added alongside the existing
+    # "gesamtbetrag": all three are distinct, commonly-printed German total
+    # labels (found via corpus audit on INV-01 — Combined Improvement Pass,
+    # improve-document-understanding) and none is a substring of another,
+    # so adding them carries no new false-positive risk.
+    r"\b(?:grand\s*total|total\s*due|amount\s*due|total|gesamtbetrag|gesamtsumme|endbetrag|"
+    r"kokku|summa|total\s*a\s*pagar)\b"
+    rf"[:\s]*(?:[$€£]|\b(?:{_KNOWN_ISO_CURRENCY_CODES})\b)?\s*([\d.,]+)",
     re.IGNORECASE,
 )
 _SUBTOTAL_LABEL_RE = re.compile(
     r"\b(?:sub\s*total|subtotal|net\s*total|vahesumma)\b"
-    r"[:\s]*(?:[$€£]|\bEUR\b|\bUSD\b|\bGBP\b)?\s*([\d.,]+)",
+    rf"[:\s]*(?:[$€£]|\b(?:{_KNOWN_ISO_CURRENCY_CODES})\b)?\s*([\d.,]+)",
     re.IGNORECASE,
 )
 _INVOICE_NUMBER_RE = re.compile(
@@ -81,7 +91,22 @@ _PHONE_LIKE_RE = re.compile(r"^[+]?\d[\d\s\-]{6,}$")
 _DATE_LIKE_RE = re.compile(r"^\d{1,4}[./\-]\d{1,2}[./\-]\d{1,4}$")
 
 _PO_NUMBER_RE = re.compile(
-    r"\b(?:p\.?\s*o\.?|purchase\s*order|tellimus)\s*(?:no\.?|number|#)?\s*[:\-]?\s*"
+    # Two conditions, both required, fix a real false-positive class found
+    # via corpus audit (Phase 2, improve-document-understanding):
+    # "PORTUGAL" -> "RTUGAL", "P.OBox14108" -> "Box14108",
+    # "SHPR:POIVexDISTRIBUTIONGMBH" -> "IVexDISTRIBUTIONGMBH".
+    #   1. (?![A-Za-z]) immediately after the label token: the character
+    #      right after "PO"/"P.O"/"purchase order"/"tellimus" must NOT be a
+    #      letter, so the 2-letter "PO" label can never blend into the next
+    #      word of running OCR text (a plain \b here is insufficient, since
+    #      an optional trailing "." on "P.O." leaves a non-word/non-word
+    #      boundary that \b would also reject on the legitimate case).
+    #   2. The number-indicator suffix (No./Number/#) is now REQUIRED, not
+    #      optional — the same proven fix already applied to
+    #      _INVOICE_NUMBER_RE in Phase 11, for the same reason: without a
+    #      real suffix there is no positive signal that a value actually
+    #      follows, only a bare label.
+    r"\b(?:p\.?\s*o\.?|purchase\s*order|tellimus)(?![A-Za-z])\s*(?:no\.?|number|#)\s*[:\-]?\s*"
     r"([A-Za-z0-9][A-Za-z0-9\-/]{2,30})",
     re.IGNORECASE,
 )
@@ -102,16 +127,43 @@ _DUE_DATE_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 
-_CURRENCY_CODE_RE = re.compile(
-    r"\b(EUR|USD|GBP|CHF|THB|SGD|MYR|ZAR|KES|GHS|DKK|PLN|AUD|CAD|SEK|NOK|RON|VND|INR|JPY)\b"
-)
+_CURRENCY_CODE_RE = re.compile(rf"\b({_KNOWN_ISO_CURRENCY_CODES})\b")
 # Only currency SYMBOLS that are unambiguous in practice (a single currency
 # uses them) are extracted directly — "$" is deliberately excluded (it's
 # shared by USD/SGD/AUD/CAD/... and guessing would violate the "do not
 # guess ambiguous symbols" rule); an ISO code elsewhere on the page (caught
-# above) is the correct, unambiguous signal for $-using currencies.
-_UNAMBIGUOUS_CURRENCY_SYMBOL_RE = re.compile(r"[€£]")
-_SYMBOL_TO_ISO = {"€": "EUR", "£": "GBP"}
+# above) is the correct, unambiguous signal for $-using currencies. "GHC" is
+# the old (pre-2007 redenomination) Ghana Cedi symbol, still printed as-is
+# on real invoices in this corpus (confirmed: INV-19) even though the ISO
+# code / master-data code is "GHS" — this is a literal, unambiguous symbol
+# the document itself prints, not an inference from country/supplier.
+_UNAMBIGUOUS_CURRENCY_SYMBOL_RE = re.compile(r"[€£]|\bGHC\b")
+_SYMBOL_TO_ISO = {"€": "EUR", "£": "GBP", "GHC": "GHS"}
+
+# --- OCR "glue" normalization ------------------------------------------------
+# OCR frequently concatenates a currency ISO code directly against an
+# adjacent digit or label word with no intervening space (confirmed via
+# corpus audit — Combined Improvement Pass, recall investigation:
+# "EUR153,58" on DU-06, "AmountZAR"/"TOTALZAR" on INV-04). A plain \b-based
+# regex can never match across that boundary, because both the code and the
+# digit/letter on either side are \w characters with no transition between
+# them. This is purely a whitespace-repair step — it never invents or
+# changes any digit, only inserts a space at a boundary the OCR engine
+# itself failed to preserve. Restricted to the fixed, known ISO code list
+# above, so it cannot fire on unrelated text.
+_KNOWN_CURRENCY_MARKERS = f"{_KNOWN_ISO_CURRENCY_CODES}|GHC"
+_GLUE_CODE_THEN_DIGIT_RE = re.compile(rf"\b({_KNOWN_CURRENCY_MARKERS})(\d)")
+_GLUE_DIGIT_THEN_CODE_RE = re.compile(rf"(\d)({_KNOWN_CURRENCY_MARKERS})\b")
+_GLUE_LABEL_THEN_CODE_RE = re.compile(
+    rf"\b(total|subtotal|amount|sum)({_KNOWN_CURRENCY_MARKERS})\b", re.IGNORECASE
+)
+
+
+def _repair_ocr_glue(text: str) -> str:
+    text = _GLUE_CODE_THEN_DIGIT_RE.sub(r"\1 \2", text)
+    text = _GLUE_DIGIT_THEN_CODE_RE.sub(r"\1 \2", text)
+    text = _GLUE_LABEL_THEN_CODE_RE.sub(r"\1 \2", text)
+    return text
 
 # Supplier / buyer role labels, multilingual (STEP 8.5-equivalent for
 # extraction: label-first, then fall back to nothing rather than guessing).
@@ -125,12 +177,47 @@ _BUYER_LABEL_RE = re.compile(
     r"([A-Z][A-Za-z0-9&.,\-\s]{2,60}?)(?:\n|$)",
     re.IGNORECASE,
 )
+# A supplier/buyer LABEL is sometimes immediately followed by ANOTHER
+# label line rather than the actual company name (confirmed — corpus
+# audit, DU-02: "SELLER" is directly followed by the line "SHIP TO", with
+# the real company name two lines further down) — the regex above has no
+# way to know that "SHIP TO" isn't a name, since it's syntactically
+# identical to one (capitalized words). This is a small, fixed blocklist
+# of common shipping/logistics section headers that are never themselves a
+# company name; a candidate matching one is rejected (field stays blank)
+# rather than kept as a wrong value — consistent with "blank over
+# fabrication," just applied to a captured-but-wrong label rather than a
+# missing one.
+_GENERIC_NON_COMPANY_LABELS = frozenset({
+    "ship to", "ship from", "bill to", "bill from", "sold to", "deliver to",
+    "delivery to", "delivery address", "importer of record", "consignee",
+    "invoice notes", "shipment information", "invoice information",
+})
+
+
+def _looks_like_generic_label(candidate: str) -> bool:
+    return candidate.strip().lower() in _GENERIC_NON_COMPANY_LABELS
 _VAT_ID_RE = re.compile(
-    r"\b(?:VAT|TAX\s*ID|USt-?ID|KMKR(?:\s*nr\.?)?|Tax\s*Registration)\s*(?:No\.?|Nr\.?|ID)?\s*[:\-]?\s*"
+    # "VAT Registration" added alongside the existing "Tax Registration" —
+    # without it, the bare "VAT" alternative matches first and the
+    # following word "Registration" (not one of the recognized No./Nr./ID
+    # suffixes) gets swallowed by the greedy ID-capture group itself,
+    # producing a bogus candidate ("Registration") and leaving the real id
+    # afterward unreachable (no label token precedes it once the match has
+    # already consumed past "VAT"). Confirmed on real corpus text — DU-10's
+    # own label is "VAT Registration No.:GB726874417".
+    r"\b(?:VAT\s*Registration|VAT|TAX\s*ID|USt-?ID|KMKR(?:\s*nr\.?)?|Tax\s*Registration)"
+    r"\s*(?:No\.?|Nr\.?|ID)?\s*[:\-]?\s*"
     r"([A-Z]{2}[A-Z0-9\-]{5,15})",
     re.IGNORECASE,
 )
 _ISO2_PREFIX_RE = re.compile(r"^([A-Z]{2})")
+# How far past a Buyer/Bill To/Sold To label a VAT id may appear and still
+# be treated as belonging to that buyer's own address block, not some
+# unrelated later section (bank details, a third-party agent, etc.) —
+# generous enough to span a short address (name, street, city, postcode)
+# but bounded, not "anywhere later in the document."
+_BUYER_COUNTRY_PROXIMITY_CHARS = 200
 
 _PAYMENT_TERMS_LABEL_RE = re.compile(
     r"\b(?:payment\s*terms?|terms\s*of\s*payment|tasumistingimus)\s*[:\-]?\s*([A-Za-z0-9 ]{2,30})",
@@ -139,9 +226,66 @@ _PAYMENT_TERMS_LABEL_RE = re.compile(
 
 # Header-level tax: a label (VAT/IVA/MwSt/GST/SST/Käibemaks) with a percent
 # rate, optionally followed by an explicit amount on the same line.
+# Trailing boundary uses (?-i:(?![a-z])) rather than a plain \b — the same
+# fix already applied to currency codes and credit-memo detection
+# elsewhere in this module: OCR commonly glues the label directly against
+# the following rate with no space (confirmed on real corpus text — DU-10:
+# "VAT20%"), and \b fails there since "T" and "2" are both word
+# characters. (?-i:...) locally disables the module-level IGNORECASE flag
+# for the lookahead only, so [a-z] doesn't also (wrongly) match uppercase.
 _HEADER_TAX_RE = re.compile(
-    r"\b(VAT|IVA|MwSt|GST|SST|K[äa]ibemaks|Tax)\b\D{0,10}?(\d{1,2}(?:[.,]\d+)?)\s*%"
+    r"\b(VAT|IVA|MwSt|GST|SST|K[äa]ibemaks|Tax)(?-i:(?![a-z]))\D{0,10}?(\d{1,2}(?:[.,]\d+)?)\s*%"
     r"(?:[^\d\n]{0,15}([\d.,]+))?",
+    re.IGNORECASE,
+)
+# "TOTAL VAT <amount>" — a stated tax total with no adjacent percent rate
+# (see the call site below for the two-document corpus evidence this is
+# based on). "TOTAL" itself must be glue-tolerant too (confirmed:
+# "TOTALVAT" with zero spaces on both real documents). The trailing
+# (?!\s*%) is required: without it this pattern collides with a RATE
+# rather than an amount — confirmed on real corpus text, INV-14:
+# "TotalVAT20%" is a 20% rate (correctly _HEADER_TAX_RE's job), but before
+# this guard was added it was captured here as a bogus tax_amount_raw of
+# "20", producing a wrong tax structure that broke ERP reconciliation for
+# an otherwise-correct existing payable — found via full-corpus regression
+# testing, not assumed.
+_TOTAL_TAX_AMOUNT_ONLY_RE = re.compile(
+    # (?>...) is an ATOMIC group (Python 3.11+): without it, a plain
+    # [\d.,]+ backtracks one digit at a time to satisfy the trailing
+    # (?!\s*%) — confirmed: on "20%", a non-atomic group first tries "20"
+    # (rejected, % follows), then backtracks to "2" (accepted, since "0%"
+    # doesn't start with "%"), silently capturing the wrong, truncated
+    # value "2" instead of correctly matching nothing at all. Atomic
+    # grouping forbids that backtrack, so a rate like "20%" is correctly
+    # rejected in full rather than partially misread.
+    r"\bTOTAL\s*(VAT|IVA|MwSt|GST|SST|Tax)(?-i:(?![a-z]))\s*[:\-]?\s*(?>([\d.,]+))(?!\s*%)",
+    re.IGNORECASE,
+)
+
+# --- Narrow Estonian tax-summary support (DU-11 class) -----------------------
+# "Summa km-ta" = the tax-EXCLUSIVE (net) amount; the VAT line beneath it is
+# often abbreviated bare "KM<rate>%" rather than spelled "Käibemaks". Bare
+# "KM" is deliberately NOT added to the general _HEADER_TAX_RE alternation
+# above: "km" is also the ordinary abbreviation for kilometers, so accepting
+# it generically would risk false positives on unrelated documents. It is
+# only safe to interpret "KM<digits>%" as a VAT line when it appears
+# alongside the much more specific "summa km-ta" net-base anchor phrase,
+# which is not a generic multilingual tax-parser redesign — it is a single,
+# narrowly-gated fallback that only ever fires when BOTH signals are found
+# together (see the caller below).
+_ESTONIAN_NET_BASE_RE = re.compile(
+    # No trailing \b after "ta": OCR frequently concatenates the label
+    # directly against a following rate/percent with no separating space
+    # (e.g. "Summakm-ta22%"), and digits count as word characters, so a \b
+    # there would (incorrectly) require a non-word character immediately
+    # after "ta" — rejecting exactly the real-world case this exists to
+    # match. There is no false-positive risk from omitting it here (unlike
+    # the PO-label fix above): this phrase is specific enough on its own.
+    r"\bsumma\s*km[\s\-]*ta\s*(?:\d{1,2}(?:[.,]\d+)?\s*%)?\D{0,10}?([\-\d.,]+)",
+    re.IGNORECASE,
+)
+_ESTONIAN_VAT_LINE_RE = re.compile(
+    r"\bkm\s*(\d{1,2}(?:[.,]\d+)?)\s*%\D{0,10}?([\-\d.,]+)",
     re.IGNORECASE,
 )
 
@@ -170,6 +314,7 @@ def extract_from_text(text: str) -> ExtractedPayable:
     if not stripped:
         result.confidence_notes.append("no text available to extract from")
         return result
+    stripped = _repair_ocr_glue(stripped)
 
     m = _INVOICE_NUMBER_RE.search(stripped)
     if m:
@@ -210,13 +355,26 @@ def extract_from_text(text: str) -> ExtractedPayable:
             result.fields["invoice_date_raw"] = next(iter(flat_dates))
 
     m = _SUPPLIER_LABEL_RE.search(stripped)
-    if m:
+    if m and not _looks_like_generic_label(m.group(1)):
         result.fields["supplier_name"] = m.group(1).strip().rstrip(",.")
     m = _BUYER_LABEL_RE.search(stripped)
-    if m:
+    if m and not _looks_like_generic_label(m.group(1)):
         result.fields["buyer_name"] = m.group(1).strip().rstrip(",.")
 
-    vat_matches = list(_VAT_ID_RE.finditer(stripped))
+    # Real VAT/tax registration identifiers universally contain at least one
+    # digit after the country-code prefix (confirmed against every VAT
+    # format in master_data/suppliers.json). A candidate with NO digit at
+    # all is not a VAT id — it's virtually always a table/document header
+    # caught by the regex's re.IGNORECASE flag treating any two letters as
+    # a plausible "country code" (e.g. "AmountGBP", a "Amount, GBP" column
+    # header, found via corpus audit — Phase 2, improve-document-understanding).
+    # This is a narrow structural rejection, not an attempt at general VAT
+    # validation — it only rejects candidates that could not possibly be a
+    # real identifier, never second-guesses a candidate that has a digit.
+    def _looks_like_real_vat_id(candidate: str) -> bool:
+        return any(ch.isdigit() for ch in candidate)
+
+    vat_matches = [m for m in _VAT_ID_RE.finditer(stripped) if _looks_like_real_vat_id(m.group(1))]
     if vat_matches:
         # First VAT-labeled id found is treated as the supplier's (the
         # supplier block conventionally appears before the buyer's tax id
@@ -228,6 +386,35 @@ def extract_from_text(text: str) -> ExtractedPayable:
         country_match = _ISO2_PREFIX_RE.match(vat)
         if country_match:
             result.fields["supplier_country"] = country_match.group(1)
+
+    # Buyer country (Combined Improvement Pass, final targeted correction):
+    # only ever derived from an EXPLICIT VAT/tax-registration id — the same
+    # already-established, already-tested mechanism used for
+    # supplier_country above — found within a bounded proximity window
+    # after an explicit Buyer/Bill To/Sold To/Customer label. This
+    # generalizes to any document with that structure; it does not attempt
+    # to resolve a free-text country name (e.g. "SOUTH AFRICA" ->  "ZA"),
+    # since no such alias infrastructure exists in
+    # pipeline/matching/normalize.py and inventing one here would be
+    # exactly the kind of unsupported inference this pass must avoid. A
+    # document whose buyer identity is only implied by layout position,
+    # with no explicit label, or whose nearby VAT id carries no country
+    # prefix (e.g. many South African VAT numbers), correctly yields no
+    # buyer_country at all — blank is the honest answer there, not a gap
+    # to paper over.
+    m = _BUYER_LABEL_RE.search(stripped)
+    if m:
+        window = stripped[m.end():m.end() + _BUYER_COUNTRY_PROXIMITY_CHARS]
+        for vm in _VAT_ID_RE.finditer(window):
+            candidate = vm.group(1).strip()
+            if not _looks_like_real_vat_id(candidate):
+                continue
+            if candidate == result.fields.get("supplier_vat_id", ""):
+                continue  # the same id already attributed to the supplier
+            country_match = _ISO2_PREFIX_RE.match(candidate)
+            if country_match:
+                result.fields["buyer_country"] = country_match.group(1)
+            break
 
     m = _PAYMENT_TERMS_LABEL_RE.search(stripped)
     if m:
@@ -266,6 +453,44 @@ def extract_from_text(text: str) -> ExtractedPayable:
         )
     if header_taxes:
         result.fields["header_taxes_raw"] = header_taxes
+
+    # "TOTAL VAT <amount>" header-tax fallback (final targeted correction):
+    # a stated tax AMOUNT with no adjacent rate — distinct from
+    # _HEADER_TAX_RE above, which requires a percent sign. Confirmed on
+    # TWO independent real documents sharing this exact template pattern
+    # (INV-03: "Subtotal 7,434.78 / TOTALVAT 1,115.22 / TOTALZAR 8,550.00";
+    # INV-04: "Subtotal 17,157.00 / TOTALVAT 2,573.55 / TOTALZAR 19,730.55")
+    # — a genuinely generalizable structural pattern, not a one-off. Only
+    # fires when a subtotal was ALSO found (never a bare amount with no
+    # base to relate it to) and no rate-based header tax already matched,
+    # so it can never silently override a stronger, already-extracted rate.
+    if "subtotal_raw" in result.fields and "header_taxes_raw" not in result.fields:
+        tv_m = _TOTAL_TAX_AMOUNT_ONLY_RE.search(stripped)
+        if tv_m:
+            result.fields["header_taxes_raw"] = [
+                {
+                    "tax_type": tv_m.group(1).upper() if tv_m.group(1).upper() != "TAX" else "VAT",
+                    "tax_rate_raw": "",
+                    "tax_amount_raw": tv_m.group(2),
+                }
+            ]
+
+    if "subtotal_raw" not in result.fields and "header_taxes_raw" not in result.fields:
+        # Narrow Estonian tax-summary fallback — only fires when BOTH the
+        # net-base anchor AND a matching VAT-rate line are found; either
+        # alone leaves the fields untouched (fail safe, per Phase 6/7
+        # policy: no partial/guessed structure).
+        net_m = _ESTONIAN_NET_BASE_RE.search(stripped)
+        vat_m = _ESTONIAN_VAT_LINE_RE.search(stripped)
+        if net_m and vat_m:
+            result.fields["subtotal_raw"] = net_m.group(1)
+            result.fields["header_taxes_raw"] = [
+                {
+                    "tax_type": "VAT",
+                    "tax_rate_raw": vat_m.group(1).replace(",", "."),
+                    "tax_amount_raw": vat_m.group(2),
+                }
+            ]
 
     if not result.fields:
         result.confidence_notes.append("no extractable fields found in available text")

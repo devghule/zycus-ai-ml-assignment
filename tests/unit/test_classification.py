@@ -64,6 +64,25 @@ def test_customs_document_classifies_as_non_payable():
     assert result.doc_class == DocumentClass.NON_PAYABLE
 
 
+def test_customs_consolidated_invoice_title_is_recognized():
+    # DU-02 (corpus audit): titled "Customs Consolidated Invoice" — no
+    # "customs declaration" wording, so the pre-existing pattern alone
+    # missed it and let this non-payable customs bundle carry zero
+    # negative signal.
+    text = "Customs Consolidated Invoice\nSELLER\nInvoiceNumber\n554701215"
+    result = classify_segment_from_text(text)
+    assert "customs vocabulary" in result.evidence
+
+
+def test_ordinary_invoice_mentioning_customs_vat_line_is_unaffected():
+    # An invoice that merely has a "Customs VAT" LINE ITEM (INV-09-style)
+    # must not be caught by the customs-invoice phrase — it requires
+    # "customs" directly followed by "invoice", which this text never has.
+    text = "Invoice No: 12345\nImport duties 31889.09\nCustoms VAT 5878.23\nTotal 37767.32"
+    result = classify_segment_from_text(text)
+    assert "customs vocabulary" not in result.evidence
+
+
 def test_dunning_letter_classifies_as_non_payable():
     text = "PAYMENT REMINDER\nOverdue Notice\nDear customer, your invoice is overdue. Please pay immediately."
     result = classify_segment_from_text(text)
@@ -142,3 +161,51 @@ def test_llm_response_recovers_on_a_later_successful_attempt():
 
     result = classify_via_llm_response(fake_call, max_retries=2)
     assert result.doc_class == DocumentClass.NON_PAYABLE
+
+
+# --- Phase 2 (improve-document-understanding): governance/compliance form --
+
+def test_internal_governance_approval_form_classifies_as_non_payable():
+    """Generalized 'DU-09 class': an internal donations/sponsorship
+    approval workflow form, not a supplier invoice, despite containing a
+    currency amount and a 'total' label."""
+    text = (
+        "Donations and Sponsorship Approval Form\n"
+        "Requestor Name: Jane Doe\n"
+        "Recipient Name: Some Org\n"
+        "Total Value in Currency: USD 1995.00\n"
+        "Compliance Risk\n"
+        "Is there any conflict of interest? Yes No\n"
+        "Approve / Reject\n"
+        "Local Management  Group CFO  Group Compliance Officer  Group CEO\n"
+    )
+    result = classify_segment_from_text(text)
+    assert result.doc_class == DocumentClass.NON_PAYABLE
+    assert result.doc_type == "internal_approval_form"
+
+
+def test_ordinary_invoice_with_single_incidental_approval_word_stays_payable():
+    """Narrowness check: a real invoice that happens to mention 'approved'
+    once must NOT be swept into the governance-form override — only
+    MULTIPLE distinct governance-specific phrases should trigger it."""
+    text = (
+        "INVOICE\nInvoice No: INV-4021\nSupplier: Acme Ltd\nBill To: Northwind Ltd\n"
+        "This purchase order was approved by the department head.\n"
+        "Subtotal: 100.00\nVAT 20%: 20.00\nTotal Due: EUR 120.00\n"
+        "Payment Terms: Net 30\n"
+    )
+    result = classify_segment_from_text(text)
+    assert result.doc_class == DocumentClass.PAYABLE_INVOICE
+
+
+def test_governance_form_requires_multiple_distinct_signals_not_just_one():
+    """A single governance phrase alone (e.g. just 'Requestor') must not by
+    itself override strong invoice evidence — the override is specifically
+    gated on >=2 distinct phrases."""
+    text = (
+        "INVOICE\nInvoice No: INV-9001\nSupplier: Acme Ltd\nBill To: Northwind Ltd\n"
+        "Requestor: John Smith\n"
+        "Subtotal: 50.00\nVAT 10%: 5.00\nTotal Due: EUR 55.00\nPayment Terms: Net 14\n"
+    )
+    result = classify_segment_from_text(text)
+    assert result.doc_class == DocumentClass.PAYABLE_INVOICE

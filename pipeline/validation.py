@@ -278,14 +278,34 @@ def check_required_payable_evidence(extracted_fields: dict) -> list[ValidationIs
     one corroborating piece of document identity must also be present.
     `gross_total_raw` itself is already required upstream (extraction
     returns None without it); this check adds the corroboration
-    requirement on top."""
+    requirement on top.
+
+    `currency` was removed from the standalone-sufficient corroborating set
+    (Combined Improvement Pass, recall investigation): a resolved currency
+    code is comparatively weak, incidental evidence — a document can
+    legitimately print an ISO currency code in an unrelated context (e.g. a
+    bank-account line, a customs bundle) without being a genuine payable
+    itself. Corpus audit found this concretely: strengthening currency
+    extraction elsewhere in this pass caused two documents with no other
+    corroborating signal at all (DU-02, a non-payable customs bundle; DU-06,
+    whose own total-extraction is independently wrong) to pass this gate on
+    currency alone. `subtotal_raw` is added as an alternative structural
+    signal instead: a document that states BOTH a subtotal and a total
+    (two distinct numbers implying real computed structure, not a single
+    bare figure) is meaningfully more corroborated than one with a lone
+    total — this is what distinguishes INV-04/INV-07 (genuine payables with
+    subtotal + total but no captured identity fields) from DU-02/DU-06
+    (a lone total and nothing else)."""
     issues: list[ValidationIssue] = []
-    corroborating = ("invoice_number", "supplier_name", "currency", "invoice_date_raw")
-    if not any(extracted_fields.get(f) for f in corroborating):
+    identity_or_date = ("invoice_number", "supplier_name", "invoice_date_raw")
+    has_identity_signal = any(extracted_fields.get(f) for f in identity_or_date)
+    has_structural_signal = bool(extracted_fields.get("subtotal_raw"))
+    if not has_identity_signal and not has_structural_signal:
         issues.append(_fail(
             "evidence.minimum_corroboration",
-            "only a bare total-like number was found — no invoice number, supplier name, "
-            "currency, or date to corroborate that this is genuinely a payable document",
+            "only a bare total-like number (and, at most, a currency code) was found — no "
+            "invoice number, supplier name, date, or distinct subtotal to corroborate that "
+            "this is genuinely a payable document",
             DeclineReason.INSUFFICIENT_EVIDENCE,
         ))
     return issues

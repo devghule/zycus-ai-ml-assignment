@@ -80,9 +80,21 @@ _LINE_ITEM_TABLE_RE = re.compile(
 )
 
 # Credit-memo specific signals ------------------------------------------------
+# Trailing boundary is a negative lowercase-lookahead rather than a plain
+# \b: OCR commonly glues a title-case label directly against the next
+# title-case word/number with no space (confirmed — DU-10's own text reads
+# "CreditNoteNo.:5900366703"), and a plain \b fails there since both "e"
+# and "N" are word characters with no transition between them. Only a
+# following LOWERCASE letter is rejected (e.g. a hypothetical unrelated
+# "creditnotebook"), matching the same fix already applied to PO/VAT label
+# glue elsewhere in this corpus.
 _CREDIT_MEMO_RE = re.compile(
+    # (?-i:...) locally disables the module-level IGNORECASE flag just for
+    # this lookahead: without it, [a-z] under re.IGNORECASE also matches
+    # uppercase letters, defeating the whole point (it would then reject
+    # "CreditNoteNo." too, since "N" is a letter).
     r"\b(credit\s*note|credit\s*memo|gutschrift|kreeditarve|nota\s*de\s*cr[ée]dito|"
-    r"nota\s*credito)\b",
+    r"nota\s*credito)(?-i:(?![a-z]))",
     re.IGNORECASE,
 )
 _REVERSAL_RE = re.compile(
@@ -99,8 +111,18 @@ _DELIVERY_WAYBILL_RE = re.compile(
     re.IGNORECASE,
 )
 _CUSTOMS_RE = re.compile(
+    # "customs...invoice" (e.g. "Customs Consolidated Invoice") added
+    # alongside "customs declaration" (corpus audit — Combined Improvement
+    # Pass: DU-02 is titled exactly this, a customs/logistics bundle, not a
+    # genuine supplier AP invoice, but previously carried no non-payable
+    # signal at all). Deliberately requires "customs" directly followed by
+    # "invoice" (with only "consolidated"/"detailed" allowed between) so it
+    # does not fire on an ordinary invoice that merely mentions customs
+    # duties/VAT as a line item (e.g. INV-09's "Customs VAT" line, which
+    # has no adjacent "invoice" word).
     r"\b(customs\s*declaration|export\s*declaration|zolldeklaration|toll(deklarat)?|"
-    r"declara[cç][aã]o\s*de\s*exporta[cç][aã]o)\b",
+    r"declara[cç][aã]o\s*de\s*exporta[cç][aã]o|"
+    r"customs\s*(?:consolidated|detailed)?\s*invoice)\b",
     re.IGNORECASE,
 )
 _DUNNING_RE = re.compile(
@@ -112,6 +134,28 @@ _INTERNAL_APPROVAL_RE = re.compile(
     r"angebot|kostenvoranschlag|pakkumus)\b",
     re.IGNORECASE,
 )
+# Internal governance/compliance workflow forms (e.g. a donation/sponsorship
+# approval form) are a distinct non-payable class from the above: they can
+# still contain a currency amount and even the word "total", so they need
+# their own, deliberately NARROW multi-signal detector rather than relying
+# on the general invoice-vocabulary conflict check alone. Each individual
+# phrase here is specific enough that an ordinary invoice mentioning one of
+# them in passing (e.g. "approved by") would not match on its own — the
+# override only fires when MULTIPLE distinct phrases co-occur (see
+# _governance_workflow_score below), which is what actually distinguishes a
+# governance form from an invoice.
+_GOVERNANCE_WORKFLOW_RE = re.compile(
+    r"\b(donations?\s*and\s*sponsorship|sponsorship\s*(?:and|&)\s*donations?|"
+    r"charitable\s*contributions?|compliance\s*risk|requestor|"
+    r"group\s*cfo|group\s*ceo|group\s*compliance\s*officer|"
+    r"approve\W{0,3}reject|reject\W{0,3}approve)\b",
+    re.IGNORECASE,
+)
+# Minimum number of DISTINCT governance-workflow phrases required before
+# this overrides ordinary invoice-like evidence — one phrase alone is not
+# enough (keeps this narrow; a real invoice with a single incidental match
+# must not be rejected).
+_GOVERNANCE_WORKFLOW_MIN_DISTINCT_HITS = 2
 
 # Minimum amount of extracted text (across the segment) needed before we're
 # willing to make any positive-or-negative call at all.
@@ -197,6 +241,26 @@ def classify_segment_from_text(text: str, evidence_hint: str = "") -> Classifica
     if _INTERNAL_APPROVAL_RE.search(stripped):
         negative_score += 2
         evidence.append("internal approval/quotation vocabulary")
+
+    governance_hits = {m.group(0).lower() for m in _GOVERNANCE_WORKFLOW_RE.finditer(stripped)}
+    if len(governance_hits) >= _GOVERNANCE_WORKFLOW_MIN_DISTINCT_HITS:
+        evidence.append(f"internal governance/compliance workflow vocabulary ({len(governance_hits)} distinct phrases)")
+        # A strong, MULTI-signal governance-workflow match overrides even
+        # substantial positive/monetary evidence: this is a fundamentally
+        # different document class from an invoice (a currency amount and a
+        # "total" label are the exception, not evidence of a commercial
+        # transaction, on this class of internal form). Checked before the
+        # ordinary positive/negative-score comparisons below so it cannot be
+        # outvoted by a bare monetary total.
+        return Classification(
+            doc_class=DocumentClass.NON_PAYABLE,
+            doc_type="internal_approval_form",
+            reason="Internal governance/compliance workflow vocabulary (multiple distinct signals) "
+            "dominates — this is an internal approval form, not a supplier invoice, regardless of "
+            "any currency amount present.",
+            confidence=0.85,
+            evidence=evidence,
+        )
 
     # Credit memo takes priority when its vocabulary is present alongside
     # payable-ish structure (it IS a payable-adjacent document, just the

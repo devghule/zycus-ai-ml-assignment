@@ -1,51 +1,10 @@
 {
   "file": "DU-09.pdf",
-  "payables": [
+  "payables": [],
+  "declined": [
     {
-      "invoice_type": "INVOICE",
-      "currency": "USD",
-      "line_items": [
-        {
-          "description": "",
-          "item_type": "SERVICE",
-          "uom": "",
-          "quantity": "1",
-          "unit_price": "1995.00",
-          "total": "1995.00",
-          "discount": "",
-          "discount_percentage": "",
-          "tax_rate": "",
-          "tax_amount": "",
-          "taxes": []
-        }
-      ],
-      "taxes": [],
-      "discount_amount": "",
-      "freight_charges": "",
-      "insurance_charges": "",
-      "extra_charges": "",
-      "excise_duties": "",
-      "gross_total": "1995.00",
-      "invoice_number": "",
-      "invoice_date": "",
-      "due_date": "",
-      "supplier": {
-        "name": "",
-        "supplier_id": "",
-        "address": "",
-        "vat_id": ""
-      },
-      "buyer": {
-        "company_code": "",
-        "business_unit_code": "",
-        "location_code": ""
-      },
-      "payment_term_id": "",
-      "po_number": "",
-      "po_id": "",
-      "subtotal": "",
-      "total_tax_amount": ""
+      "doc_type": "internal_approval_form",
+      "reason": "Internal governance/compliance workflow vocabulary (multiple distinct signals) dominates — this is an internal approval form, not a supplier invoice, regardless of any currency amount present."
     }
-  ],
-  "declined": []
+  ]
 }

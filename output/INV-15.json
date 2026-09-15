@@ -33,7 +33,7 @@
         "name": "",
         "supplier_id": "",
         "address": "",
-        "vat_id": "AmountGBP"
+        "vat_id": ""
       },
       "buyer": {
         "company_code": "",

@@ -3,24 +3,24 @@
   "payables": [],
   "declined": [
     {
-      "doc_type": "invoice",
-      "reason": "INSUFFICIENT_EVIDENCE: financial.missing_currency: currency is blank on a payable"
+      "doc_type": "unknown",
+      "reason": "Conflicting payable and non-payable signals; declining to guess."
     },
     {
-      "doc_type": "invoice",
-      "reason": "INSUFFICIENT_EVIDENCE: financial.missing_currency: currency is blank on a payable"
+      "doc_type": "unknown",
+      "reason": "Conflicting payable and non-payable signals; declining to guess."
     },
     {
-      "doc_type": "invoice",
-      "reason": "INSUFFICIENT_EVIDENCE: financial.missing_currency: currency is blank on a payable"
+      "doc_type": "unknown",
+      "reason": "Conflicting payable and non-payable signals; declining to guess."
     },
     {
-      "doc_type": "invoice",
-      "reason": "INSUFFICIENT_EVIDENCE: financial.missing_currency: currency is blank on a payable"
+      "doc_type": "unknown",
+      "reason": "Conflicting payable and non-payable signals; declining to guess."
     },
     {
-      "doc_type": "invoice",
-      "reason": "INSUFFICIENT_EVIDENCE: financial.missing_currency: currency is blank on a payable"
+      "doc_type": "unknown",
+      "reason": "Conflicting payable and non-payable signals; declining to guess."
     }
   ]
 }
